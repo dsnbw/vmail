@@ -1,0 +1,115 @@
+map $http_upgrade $mail_connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
+server {
+    listen {{HTTP_PORT}};
+    listen [::]:{{HTTP_PORT}};
+    server_name {{MAIL_HOST}} ~^mail\..+$;
+    root {{WEBMAIL_ROOT}};
+    index index.php index.html;
+    client_max_body_size 64m;
+    server_tokens off;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript image/svg+xml;
+
+    # 1. Vmail Admin Web UI
+    location = /admin {
+        return 301 /admin/;
+    }
+
+    location ^~ /admin/ {
+        proxy_pass http://127.0.0.1:8096/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $mail_connection_upgrade;
+        proxy_hide_header Content-Security-Policy;
+        add_header Content-Security-Policy "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; object-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'self';" always;
+        add_header Referrer-Policy "no-referrer" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+    }
+
+    # 2. Vmail Transactional Mail API & Tracking
+    location ^~ /vmail-api/ {
+        proxy_pass http://127.0.0.1:8096/vmail-api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+    }
+
+    # 3. Vmail Core Protocols & JMAP Endpoints
+    location ^~ /jmap {
+        proxy_pass http://127.0.0.1:8090;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $mail_connection_upgrade;
+    }
+
+    location ^~ /.well-known/ {
+        proxy_pass http://127.0.0.1:8090/.well-known/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # 4. Cloudflare Email Routing Inbound Webhook Bridge
+    location = /_inbound_bridge {
+        client_max_body_size 30m;
+        proxy_pass http://127.0.0.1:8095;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 60s;
+    }
+
+    # 5. Gmail-style Webmail Root (Roundcube)
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass {{PHP_FPM_SOCK}};
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        include fastcgi_params;
+        fastcgi_param HTTPS on;
+        fastcgi_connect_timeout 60;
+        fastcgi_send_timeout 180;
+        fastcgi_read_timeout 180;
+    }
+
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|webp|woff|woff2|ttf|eot)$ {
+        expires 30d;
+        add_header Cache-Control "public, no-transform";
+        try_files $uri =404;
+    }
+
+    # Protect sensitive Webmail files and directories
+    location ~ ^/(config|temp|logs|SQL|bin)/ {
+        deny all;
+    }
+    location ~ /\. {
+        deny all;
+    }
+}

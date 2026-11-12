@@ -1,0 +1,31 @@
+<roundcube:include file="includes/layout.html" />
+
+<h1 class="voice"><roundcube:object name="productname" /> <roundcube:label name="login" /></h1>
+
+<div id="layout-content" class="selected no-navbar gmail-login-page" role="main">
+	<div id="gmail-login-card">
+		<div class="gmail-login-header">
+			<roundcube:object name="logo" src="/images/logo.svg" id="logo" alt="Vmail" />
+			<div class="gmail-login-brand">Vmail</div>
+			<h2 class="gmail-login-title"><roundcube:label name="login" /></h2>
+			<p class="gmail-login-subtitle">Sử dụng tài khoản email tên miền riêng của bạn</p>
+			<div id="gmail-login-domain-pill" class="gmail-login-domain-pill hidden"></div>
+		</div>
+		<roundcube:form id="login-form" name="login-form" method="post" class="propform">
+			<roundcube:object name="loginform" form="login-form" size="40" submit=true class="form-control" />
+			<div id="login-footer" role="contentinfo">
+				<span>Vmail Server</span>
+				<roundcube:if condition="config:support_url" />
+					&nbsp;&bull;&nbsp; <a href="<roundcube:var name='config:support_url' />" target="_blank" class="support-link"><roundcube:label name="support" /></a>
+				<roundcube:endif />
+				<roundcube:container name="loginfooter" id="login-footer" />
+			</div>
+		</form>
+	</div>
+</div>
+
+<noscript>
+	<p class="noscriptwarning"><roundcube:label name="noscriptwarning" /></p>
+</noscript>
+
+<roundcube:include file="includes/footer.html" />

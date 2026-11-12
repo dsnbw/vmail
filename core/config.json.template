@@ -1,0 +1,8 @@
+{
+  "@type": "RocksDb",
+  "path": "/var/lib/vmail-core/",
+  "blobSize": 4096,
+  "bufferSize": 134217728,
+  "poolWorkers": null,
+  "cacheSize": null
+}

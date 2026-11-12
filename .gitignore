@@ -1,0 +1,31 @@
+# Credentials, secrets, keys, local state — NEVER commit!
+github.md
+.env
+.env.*
+*.key
+*.secret
+*.pem
+*.crt
+*.p12
+*.db
+*.db-shm
+*.db-wal
+cloudflare.json
+engine.json
+config.inc.php
+inbound_bridge.secret
+
+# Python / OS / IDE artifacts
+__pycache__/
+*.pyc
+*.pyo
+.Python
+*.log
+*.tmp
+*.bak
+data/
+logs/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

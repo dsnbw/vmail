@@ -1,0 +1,16 @@
+[Unit]
+Description=Vmail Core Mail Engine (SMTP/IMAP/JMAP/Anti-Spam)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/vmail-core -c /etc/vmail/core-storage.json
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+StandardOutput=append:/var/log/vmail/core.out
+StandardError=append:/var/log/vmail/core.out
+
+[Install]
+WantedBy=multi-user.target

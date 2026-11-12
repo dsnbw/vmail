@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title></title>
+<style>
+html, body {
+  height: 100%;
+  margin: 0;
+  font-family: 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff;
+  color: #5f6368;
+}
+.empty-state {
+  text-align: center;
+  padding: 24px;
+  user-select: none;
+}
+.empty-state svg {
+  width: 72px;
+  height: 54px;
+  margin-bottom: 14px;
+  opacity: 0.85;
+}
+.empty-state p {
+  margin: 0;
+  font-size: 14px;
+  color: #5f6368;
+}
+html.dark-mode body {
+  background: #1f2228;
+  color: #9aa0a6;
+}
+html.dark-mode .empty-state p {
+  color: #9aa0a6;
+}
+</style>
+<script>
+  try {
+    if (document.cookie.indexOf('colorMode=dark') > -1
+      || (document.cookie.indexOf('colorMode=light') === -1 && window.matchMedia('(prefers-color-scheme: dark)').matches)
+    ) {
+      document.documentElement.className += ' dark-mode';
+    }
+  } catch (e) {}
+</script>
+</head>
+<body>
+  <div class="empty-state">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 48">
+      <rect x="2" y="4" width="60" height="40" rx="6" fill="none" stroke="currentColor" stroke-width="2" opacity="0.25"/>
+      <path d="M8 12l24 18 24-18" fill="none" stroke="currentColor" stroke-width="2" opacity="0.28" stroke-linecap="round"/>
+    </svg>
+    <p>Chọn một cuộc hội thoại để đọc nội dung</p>
+  </div>
+</body>
+</html>

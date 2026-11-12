@@ -1,0 +1,146 @@
+<roundcube:add_label name="back" />
+<roundcube:add_label name="errortitle" />
+<roundcube:add_label name="options" />
+<roundcube:add_label name="plaintoggle" />
+<roundcube:add_label name="htmltoggle" />
+<roundcube:add_label name="previous" />
+<roundcube:add_label name="next" />
+<roundcube:add_label name="select" />
+<roundcube:add_label name="close" />
+<roundcube:add_label name="browse" />
+<roundcube:add_label name="choosefile" />
+<roundcube:add_label name="choosefiles" />
+<roundcube:object name="doctype" value="html5" />
+<roundcube:if condition="!env:framed || env:extwin" />
+<html>
+<roundcube:else />
+<html class="iframe">
+<roundcube:endif />
+<head>
+	<roundcube:object name="meta" />
+	<roundcube:object name="links" />
+	<link rel="icon" type="image/svg+xml" href="/images/logo.svg">
+	<link rel="stylesheet" href="/deps/bootstrap.min.css">
+	<roundcube:if condition="config:devel_mode" />
+		<link rel="stylesheet/less" href="/styles/styles.less">
+		<roundcube:link rel="stylesheet/less" href="/styles/print.less" condition="env:action == 'print'" />
+		<script src="/deps/less.min.js" data-env="development"></script>
+	<roundcube:else />
+		<link rel="stylesheet" href="/styles/styles.min.css">
+		<roundcube:link rel="stylesheet" href="/styles/print.min.css" condition="env:action == 'print'" />
+	<roundcube:endif />
+	<link rel="stylesheet" href="/styles/gmail.css">
+	<roundcube:if condition="env:action != 'print' && !config:devel_mode && config:dark_mode_support" />
+		<script>
+		try {
+			if (document.cookie.indexOf('colorMode=dark') > -1
+				|| (document.cookie.indexOf('colorMode=light') === -1 && window.matchMedia('(prefers-color-scheme: dark)').matches)
+			) {
+				document.documentElement.className += ' dark-mode';
+			}
+		} catch (e) { }
+		</script>
+	<roundcube:endif />
+</head>
+<body class="task-<roundcube:exp expression="env:error_task ?: env:task ?: 'error'"> action-<roundcube:exp expression="asciiwords(env:action, true, '-') ?: 'none'">">
+	<roundcube:if condition="!env:framed && !env:extwin && env:task != 'login' && env:task != 'error-login' && env:action != 'print'" />
+		<div id="gmail-shell">
+			<header id="gmail-topbar" role="banner">
+				<div class="gmail-topbar-left">
+					<button type="button" id="gmail-sidebar-toggle" class="gmail-icon-btn" title="Thu gọn / Mở rộng danh mục" aria-label="Menu chính">
+						<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+					</button>
+					<a href="?_task=mail" class="gmail-brand" title="Vmail">
+						<img src="/images/logo.svg" alt="Vmail" />
+						<span class="gmail-brand-text">Vmail</span>
+						<span id="gmail-brand-domain" class="gmail-brand-domain hidden"></span>
+					</a>
+				</div>
+				<div id="gmail-topbar-search" class="gmail-topbar-center"></div>
+				<div class="gmail-topbar-right">
+					<roundcube:if condition="env:task == 'mail' && env:action != 'compose'" />
+						<button type="button" id="gmail-split-toggle" class="gmail-icon-btn gmail-split-btn" title="Bật / Tắt chia đôi màn hình đọc thư" aria-label="Chế độ đọc" aria-pressed="false">
+							<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M3 5v14h18V5H3zm8 12H5V7h6v10zm8 0h-6V7h6v10z"/></svg>
+						</button>
+					<roundcube:endif />
+					<div class="gmail-notify-wrap">
+						<button type="button" id="gmail-notify-btn" class="gmail-icon-btn" title="Thông báo thư mới" aria-label="Thông báo thư mới" aria-haspopup="true" aria-expanded="false">
+							<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>
+							<span id="gmail-notify-dot" class="gmail-notify-dot hidden"></span>
+						</button>
+						<div id="gmail-notify-menu" class="gmail-notify-menu hidden" role="menu">
+							<div class="gmail-notify-head">
+								<strong>Thông báo thư mới</strong>
+								<span id="gmail-notify-status" class="gmail-notify-pill">Tự làm mới 5s</span>
+							</div>
+							<div class="gmail-notify-body">
+								<button type="button" id="gmail-notify-desktop-btn" class="gmail-notify-action">
+									<span id="gmail-notify-desktop-label">Bật thông báo màn hình (Desktop)</span>
+								</button>
+								<button type="button" id="gmail-notify-sound-btn" class="gmail-notify-action">
+									<span id="gmail-notify-sound-label">Âm thanh báo thư mới: Bật</span>
+								</button>
+								<button type="button" id="gmail-notify-test-btn" class="gmail-notify-action">
+									<span>Kiểm tra thông báo ngay</span>
+								</button>
+							</div>
+						</div>
+					</div>
+					<roundcube:if condition="config:dark_mode_support" />
+						<button type="button" id="gmail-theme-btn" class="gmail-icon-btn" title="Chuyển giao diện Sáng / Tối" aria-label="Chế độ Sáng / Tối">
+							<svg class="icon-theme-auto" viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
+						</button>
+					<roundcube:endif />
+					<a href="?_task=mail" class="gmail-icon-btn <roundcube:exp expression="env:task == 'mail' ? 'active' : ''">" title="Hộp thư" aria-label="Hộp thư">
+						<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
+					</a>
+					<a href="?_task=addressbook" class="gmail-icon-btn <roundcube:exp expression="env:task == 'addressbook' ? 'active' : ''">" title="Danh bạ" aria-label="Danh bạ">
+						<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+					</a>
+					<a href="?_task=settings" class="gmail-icon-btn <roundcube:exp expression="env:task == 'settings' ? 'active' : ''">" title="Cài đặt" aria-label="Cài đặt">
+						<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.31-.07.63-.07.94s.02.63.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+					</a>
+					<div class="gmail-account-wrap">
+						<button type="button" id="gmail-user-chip" class="gmail-user-chip" aria-haspopup="true" aria-expanded="false">
+							<span class="gmail-avatar" id="gmail-user-avatar">D</span>
+							<span class="gmail-user-email"><roundcube:object name="username" /></span>
+						</button>
+						<div id="gmail-account-menu" class="gmail-account-menu hidden" role="menu">
+							<div class="gmail-account-card-head">
+								<div class="gmail-avatar gmail-avatar-lg" id="gmail-user-avatar-lg">D</div>
+								<div class="gmail-account-meta">
+									<div class="gmail-account-addr"><roundcube:object name="username" /></div>
+									<div class="gmail-account-sub">Tài khoản Vmail</div>
+								</div>
+							</div>
+							<div class="gmail-account-actions">
+								<a href="?_task=settings" class="gmail-account-item">
+									<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
+									<span>Cài đặt hộp thư</span>
+								</a>
+								<a href="?_task=settings&_action=identities" class="gmail-account-item">
+									<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-7 3h5v2h-5V7zm0 4h5v2h-5v-2zM9 7c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm5 10H4v-1c0-2 4-3.1 5-3.1s5 1.1 5 3.1v1z"/></svg>
+									<span>Danh tính &amp; Chữ ký</span>
+								</a>
+								<a href="/admin/" target="_blank" class="gmail-account-item">
+									<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg>
+									<span>Quản trị Vmail Server</span>
+								</a>
+								<a href="?_task=addressbook" class="gmail-account-item">
+									<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+									<span>Danh bạ</span>
+								</a>
+								<hr class="gmail-menu-divider" />
+								<a href="?_task=logout" onclick="return rcmail.command('logout','',this,event)" class="gmail-account-item gmail-logout-link">
+									<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>
+									<span>Đăng xuất</span>
+								</a>
+							</div>
+						</div>
+					</div>
+				</div>
+			</header>
+	<roundcube:endif />
+	<roundcube:if condition="!env:framed || env:extwin" />
+		<div id="<roundcube:exp expression="env:action == 'print' ? 'print-' : ''">layout">
+	<roundcube:endif />

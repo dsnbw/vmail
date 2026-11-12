@@ -1,0 +1,63 @@
+<?php
+$config = [];
+$config['db_dsnw'] = '{{DB_DSN}}';
+
+// Vmail Core IMAP & SMTP Submission
+$config['imap_host'] = 'ssl://127.0.0.1:9930';
+$config['imap_auth_type'] = null;
+$config['imap_delimiter'] = '/';
+$config['imap_conn_options'] = [
+    'ssl' => [
+        'verify_peer' => false,
+        'verify_peer_name' => false,
+        'allow_self_signed' => true,
+    ],
+];
+
+$config['smtp_host'] = 'ssl://127.0.0.1:4650';
+$config['smtp_user'] = '%u';
+$config['smtp_pass'] = '%p';
+$config['smtp_auth_type'] = null;
+$config['smtp_conn_options'] = [
+    'ssl' => [
+        'verify_peer' => false,
+        'verify_peer_name' => false,
+        'allow_self_signed' => true,
+    ],
+];
+
+$config['support_url'] = '';
+$config['product_name'] = 'Vmail';
+$config['useragent'] = 'Vmail Webmail';
+$config['enable_installer'] = false;
+$config['x_frame_options'] = 'sameorigin';
+$config['des_key'] = '{{DES_KEY}}';
+
+$config['plugins'] = [
+    'archive',
+    'zipdownload',
+    'managesieve',
+    'markasjunk',
+    'newmail_notifier',
+];
+
+$config['skin'] = 'gmail';
+$config['auto_create_user'] = true;
+$config['language'] = 'vi_VN';
+$config['drafts_mbox'] = 'Drafts';
+$config['junk_mbox'] = 'Junk';
+$config['sent_mbox'] = 'Sent';
+$config['trash_mbox'] = 'Trash';
+$config['archive_mbox'] = 'Archive';
+$config['create_default_folders'] = true;
+$config['managesieve_port'] = 4190;
+$config['managesieve_host'] = '127.0.0.1';
+
+// Real-time auto-refresh & notifications
+$config['min_refresh_interval'] = 5;
+$config['refresh_interval'] = 5;
+$config['check_all_folders'] = true;
+$config['newmail_notifier_basic'] = true;
+$config['newmail_notifier_sound'] = true;
+$config['newmail_notifier_desktop'] = true;
+$config['newmail_notifier_desktop_timeout'] = 12;

@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+import argparse
+import getpass
+import json
+import os
+import sys
+
+sys.path.insert(0, os.environ.get("VMAIL_APP_DIR", "/opt/vmail/app"))
+import db
+import dns_cf
+import jmap_client
+import log_parser
+import mailer
+
+
+def _default_sender():
+    try:
+        accts = jmap_client.list_accounts()
+        admin = next((a for a in accts if (a.get("roles") or {}).get("@type") == "Admin"), None)
+        if admin and admin.get("emailAddress"):
+            return admin["emailAddress"]
+        if accts and accts[0].get("emailAddress"):
+            return accts[0]["emailAddress"]
+    except Exception:
+        pass
+    try:
+        doms = jmap_client.list_domains()
+        if doms:
+            return f"admin@{doms[0]['name']}"
+    except Exception:
+        pass
+    return ""
+
+
+def cmd_status():
+    h = log_parser.get_system_health()
+    l = log_parser.parse_logs(limit=20)
+    routes, strat = jmap_client.get_relays_and_strategy()
+    def_route = ((strat.get("route") or {}).get("else") or "").strip("'") or "MX direct"
+    print("=== VMAIL SERVER STATUS ===")
+    print(f"RAM: {h['ram_used_mb']} MB / {h['ram_total_mb']} MB | Disk Free: {h['disk_free_gb']} GB | Load: {h['load_1m']}")
+    print(f"Default Route: {def_route}")
+    print("Processes:")
+    for p in h["processes"]:
+        print(f"  - {p['name']}: {'UP' if p['running'] else 'DOWN'} ({p['rss_mb']} MB)")
+    print("Ports:", ", ".join(f"{k}={'OK' if v else 'DOWN'}" for k, v in h["ports"].items()))
+    print("Totals:", l["totals"])
+
+
+def cmd_domains():
+    for d in jmap_client.list_domains():
+        print(f"- {d['name']} (id={d['id']}, enable={d.get('enable', True)}, catchAll={d.get('catchAllAddress') or '-'})")
+
+
+def cmd_accounts():
+    domains = {d["id"]: d["name"] for d in jmap_client.list_domains()}
+    for a in jmap_client.list_accounts():
+        role = (a.get("roles") or {}).get("@type") or "User"
+        q = int((a.get("quotas") or {}).get("maxDiskQuota", 0) / (1024 * 1024))
+        print(f"- {a.get('emailAddress')} [{role}] quota={q or 'unlimited'}MB domain={domains.get(a.get('domainId'), '')}")
+
+
+def cmd_add(email, password=None, name=""):
+    if "@" not in email:
+        sys.exit("Email khong hop le (can dang user@domain)")
+    local, dname = email.strip().lower().split("@", 1)
+    domains = {d["name"]: d["id"] for d in jmap_client.list_domains()}
+    if dname not in domains:
+        sys.exit(f"Ten mien {dname} chua ton tai tren he thong.")
+    if not password:
+        password = getpass.getpass(f"Mat khau cho {email}: ")
+    res = jmap_client.create_account(local, domains[dname], password, name or local, "User")
+    db.init_db()
+    db.save_sender_cred(email.strip().lower(), password)
+    print(f"[OK] Da tao hop thu {email}: id={res.get('id')}")
+
+
+def cmd_sync():
+    dns_cf.load_cf_creds()
+    print(json.dumps(dns_cf.sync_all_cloudflare(), indent=2, ensure_ascii=False))
+
+
+def cmd_test(to_email, from_email=""):
+    db.init_db()
+    sender = (from_email or "").strip() or _default_sender()
+    if not sender:
+        sys.exit("Khong tim thay dia chi gui mac dinh. Hay truyen --from <user@domain>")
+    res = mailer.send_email(
+        from_email=sender,
+        from_name="Vmail CLI",
+        to_email=to_email,
+        subject="[Vmail] CLI Delivery Verification",
+        html_body="<p>Thu xac minh gui qua <strong>Vmail CLI</strong>.</p>",
+        source="cli",
+        verify_delivery=True,
+    )
+    print(json.dumps(res, indent=2, ensure_ascii=False))
+
+
+def main():
+    p = argparse.ArgumentParser(prog="vmail", description="Vmail Open Mail Server CLI")
+    sub = p.add_subparsers(dest="cmd")
+    sub.add_parser("status")
+    sub.add_parser("domains")
+    sub.add_parser("accounts")
+    sub.add_parser("sync")
+    pa = sub.add_parser("add")
+    pa.add_argument("email")
+    pa.add_argument("password", nargs="?")
+    pa.add_argument("--name", default="")
+    pt = sub.add_parser("test")
+    pt.add_argument("to")
+    pt.add_argument("--from", dest="sender", default="")
+    args = p.parse_args()
+    if args.cmd == "status":
+        cmd_status()
+    elif args.cmd == "domains":
+        cmd_domains()
+    elif args.cmd == "accounts":
+        cmd_accounts()
+    elif args.cmd == "sync":
+        cmd_sync()
+    elif args.cmd == "add":
+        cmd_add(args.email, args.password, args.name)
+    elif args.cmd == "test":
+        cmd_test(args.to, args.sender)
+    else:
+        p.print_help()
+
+
+if __name__ == "__main__":
+    main()

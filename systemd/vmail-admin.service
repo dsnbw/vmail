@@ -1,0 +1,19 @@
+[Unit]
+Description=Vmail Control Panel & Transactional API Server
+After=network-online.target vmail-core.service
+Requires=vmail-core.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/vmail/app
+Environment=VMAIL_CORE_URL=http://127.0.0.1:8090
+Environment=VMAIL_ADMIN_HOST=127.0.0.1
+Environment=VMAIL_ADMIN_PORT=8096
+ExecStart=/usr/bin/python3 -u /opt/vmail/app/server.py
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/vmail/vmail.log
+StandardError=append:/var/log/vmail/vmail.log
+
+[Install]
+WantedBy=multi-user.target

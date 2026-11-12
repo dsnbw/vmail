@@ -1,0 +1,19 @@
+[Unit]
+Description=Vmail Inbound Webhook Bridge (Cloudflare Email Routing -> SMTP 2525)
+After=network-online.target vmail-core.service
+Requires=vmail-core.service
+
+[Service]
+Type=simple
+Environment=VMAIL_BRIDGE_LISTEN_HOST=127.0.0.1
+Environment=VMAIL_BRIDGE_LISTEN_PORT=8095
+Environment=VMAIL_BRIDGE_SMTP_HOST=127.0.0.1
+Environment=VMAIL_BRIDGE_SMTP_PORT=2525
+ExecStart=/usr/bin/python3 -u /usr/local/bin/mail_inbound_bridge.py
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/vmail/bridge.log
+StandardError=append:/var/log/vmail/bridge.log
+
+[Install]
+WantedBy=multi-user.target
