@@ -94,10 +94,20 @@ def read_chunked_body(rfile):
     return b"".join(chunks)
 
 
+_EMAIL_RE = re.compile(r"^[^@\s\r\n]+@[^@\s\r\n]+\.[^@\s\r\n]+$")
+
+
 class InboundHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "Vmail-Bridge"
     sys_version = ""
+
+    def setup(self):
+        super().setup()
+        try:
+            self.connection.settimeout(30.0)
+        except Exception:
+            pass
 
     def log_message(self, format, *args):
         sys.stdout.write("[VmailBridge] " + (format % args) + "\n")
@@ -105,13 +115,16 @@ class InboundHandler(BaseHTTPRequestHandler):
 
     def send_json(self, code, obj):
         body = json.dumps(obj).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
 
     def do_GET(self):
         if self.path == "/_inbound_bridge":
@@ -143,12 +156,12 @@ class InboundHandler(BaseHTTPRequestHandler):
             self.send_json(400, {"ok": False, "error": f"read error: {e}"})
             return
 
-        mail_from = parseaddr(self.headers.get("X-Mail-From", ""))[1]
-        rcpt_to = parseaddr(self.headers.get("X-Rcpt-To", ""))[1]
-        if not rcpt_to or "@" not in rcpt_to or "\r" in rcpt_to or "\n" in rcpt_to:
+        mail_from = parseaddr(self.headers.get("X-Mail-From", ""))[1].strip()
+        rcpt_to = parseaddr(self.headers.get("X-Rcpt-To", ""))[1].strip()
+        if not rcpt_to or not _EMAIL_RE.match(rcpt_to):
             self.send_json(400, {"ok": False, "error": "missing or invalid X-Rcpt-To"})
             return
-        if "\r" in mail_from or "\n" in mail_from:
+        if "\r" in mail_from or "\n" in mail_from or (mail_from and not _EMAIL_RE.match(mail_from)):
             self.send_json(400, {"ok": False, "error": "invalid X-Mail-From"})
             return
 

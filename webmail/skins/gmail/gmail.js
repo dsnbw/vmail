@@ -742,6 +742,11 @@
       };
     }
 
+    rcmail.addEventListener('selectfolder', function () {
+      inRefreshCycle = false;
+      pendingNewMsgs = [];
+    });
+
     if (typeof rcmail.add_message_row === 'function' && !rcmail._gmailPatchedAddRow) {
       var origAddRow = rcmail.add_message_row;
       rcmail._gmailPatchedAddRow = true;
@@ -750,8 +755,14 @@
         var res = origAddRow.apply(this, arguments);
         if (res && !existed && inRefreshCycle && flags && !flags.seen && !notifiedUids[uid]) {
           var mbox = String(flags.mbox || this.env.mailbox || 'INBOX');
-          var skip = ['Sent', 'Sent Items', 'Drafts', 'Trash', 'Deleted Items'];
+          var skip = ['Sent', 'Sent Items', 'Drafts', 'Trash', 'Deleted Items', 'Junk', 'Spam'];
           if (skip.indexOf(mbox) === -1) {
+            var seenKeys = Object.keys(notifiedUids);
+            if (seenKeys.length > 2000) {
+              for (var kIdx = 0; kIdx < 500; kIdx++) {
+                delete notifiedUids[seenKeys[kIdx]];
+              }
+            }
             notifiedUids[uid] = true;
             pendingNewMsgs.push({
               uid: uid,

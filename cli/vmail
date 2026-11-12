@@ -3,6 +3,7 @@ import argparse
 import getpass
 import json
 import os
+import subprocess
 import sys
 
 sys.path.insert(0, os.environ.get("VMAIL_APP_DIR", "/opt/vmail/app"))
@@ -32,6 +33,19 @@ def _default_sender():
     return ""
 
 
+def _svc_ctrl(action: str):
+    if os.path.isdir("/run/systemd/system"):
+        units = ["vmail-core", "vmail-admin", "vmail-bridge", "nginx"]
+        subprocess.run(["systemctl", action] + units, check=False)
+    elif os.path.exists("/usr/local/bin/vmail-services"):
+        subprocess.run(["/usr/local/bin/vmail-services", action], check=False)
+    elif os.path.isdir("/run/openrc"):
+        for s in ("vmail-core", "vmail-admin", "vmail-bridge", "nginx"):
+            subprocess.run(["rc-service", s, action], check=False)
+    else:
+        print("No systemd/OpenRC/vmail-services supervisor found on this host.")
+
+
 def cmd_status():
     h = log_parser.get_system_health()
     l = log_parser.parse_logs(limit=20)
@@ -45,6 +59,28 @@ def cmd_status():
         print(f"  - {p['name']}: {'UP' if p['running'] else 'DOWN'} ({p['rss_mb']} MB)")
     print("Ports:", ", ".join(f"{k}={'OK' if v else 'DOWN'}" for k, v in h["ports"].items()))
     print("Totals:", l["totals"])
+
+
+def cmd_doctor():
+    print("=== VMAIL SELF-DIAGNOSTICS ===")
+    h = log_parser.get_system_health()
+    all_ok = True
+    for p in h["processes"]:
+        st = "OK" if p["running"] else "FAIL"
+        if not p["running"]:
+            all_ok = False
+        print(f"[PROC] {p['name']}: {st} ({p['rss_mb']} MB)")
+    for k, v in h["ports"].items():
+        if not v:
+            all_ok = False
+        print(f"[PORT] {k}: {'LISTENING' if v else 'DOWN'}")
+    for cfg in ("/etc/vmail/config.json", "/etc/vmail/engine.json", "/etc/vmail/secret.key", "/etc/vmail/inbound_bridge.secret"):
+        ex = os.path.exists(cfg)
+        if not ex:
+            all_ok = False
+        print(f"[CONF] {cfg}: {'OK' if ex else 'MISSING'}")
+    print("Result:", "ALL CHECKS PASSED" if all_ok else "ISSUES DETECTED (see above)")
+    sys.exit(0 if all_ok else 1)
 
 
 def cmd_domains():
@@ -97,13 +133,25 @@ def cmd_test(to_email, from_email=""):
     print(json.dumps(res, indent=2, ensure_ascii=False))
 
 
+def cmd_logs(lines=50):
+    res = log_parser.parse_logs(limit=lines)
+    for ev in res.get("events", []):
+        print(f"[{ev.get('time')}] {ev.get('type'):10s} | {ev.get('from')} -> {ev.get('to')} | {ev.get('detail')}")
+
+
 def main():
     p = argparse.ArgumentParser(prog="vmail", description="Vmail Open Mail Server CLI")
     sub = p.add_subparsers(dest="cmd")
     sub.add_parser("status")
+    sub.add_parser("doctor")
     sub.add_parser("domains")
     sub.add_parser("accounts")
     sub.add_parser("sync")
+    sub.add_parser("start")
+    sub.add_parser("stop")
+    sub.add_parser("restart")
+    pl = sub.add_parser("logs")
+    pl.add_argument("-n", type=int, default=40)
     pa = sub.add_parser("add")
     pa.add_argument("email")
     pa.add_argument("password", nargs="?")
@@ -114,12 +162,19 @@ def main():
     args = p.parse_args()
     if args.cmd == "status":
         cmd_status()
+    elif args.cmd == "doctor":
+        cmd_doctor()
     elif args.cmd == "domains":
         cmd_domains()
     elif args.cmd == "accounts":
         cmd_accounts()
     elif args.cmd == "sync":
         cmd_sync()
+    elif args.cmd in ("start", "stop", "restart"):
+        _svc_ctrl(args.cmd)
+        print(f"[Vmail] Services {args.cmd} issued.")
+    elif args.cmd == "logs":
+        cmd_logs(args.n)
     elif args.cmd == "add":
         cmd_add(args.email, args.password, args.name)
     elif args.cmd == "test":

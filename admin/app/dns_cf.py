@@ -5,11 +5,13 @@ import re
 import socket
 import struct
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import jmap_client
 
 CF_CFG = os.environ.get("VMAIL_CF_CFG", "/etc/vmail/cloudflare.json")
+VMAIL_CFG = os.environ.get("VMAIL_CONFIG_PATH", "/etc/vmail/config.json")
 DEFAULT_TUNNEL_SERVICE = os.environ.get("VMAIL_TUNNEL_SERVICE", "http://127.0.0.1:8080")
 DEFAULT_INBOUND_WORKER = os.environ.get("VMAIL_INBOUND_WORKER", "vmail-inbound")
 
@@ -150,6 +152,38 @@ def _decode_name(buf: bytes, offset: int):
     return ".".join(labels), orig_next
 
 
+def _query_doh(name: str, qtype: str = "TXT", timeout: float = 3.5):
+    q = urllib.parse.urlencode({"name": name.strip("."), "type": qtype.upper()})
+    urls = [
+        (f"https://cloudflare-dns.com/dns-query?{q}", {"Accept": "application/dns-json", "User-Agent": "Vmail-DNS/1.0"}),
+        (f"https://dns.google/resolve?{q}", {"Accept": "application/json", "User-Agent": "Vmail-DNS/1.0"}),
+    ]
+    qcode = QTYPES.get(qtype.upper(), 16)
+    for url, hdrs in urls:
+        try:
+            req = urllib.request.Request(url, headers=hdrs)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                d = json.loads(r.read().decode("utf-8"))
+            out = []
+            for ans in d.get("Answer") or []:
+                if ans.get("type") != qcode:
+                    continue
+                val = str(ans.get("data") or "").strip()
+                if qcode == 16:
+                    # DoH returns TXT often wrapped/split with quotes
+                    parts = re.findall(r'"((?:[^"\\]|\\.)*)"', val)
+                    val = "".join(parts) if parts else val.strip('"')
+                elif qcode in (5, 15):
+                    val = val.rstrip(".")
+                if val:
+                    out.append(val)
+            if out:
+                return out
+        except Exception:
+            continue
+    return []
+
+
 def query_dns(name: str, qtype: str = "TXT", server: str = "8.8.8.8", timeout: float = 2.5):
     qcode = QTYPES.get(qtype.upper(), 16)
     tid = int.from_bytes(os.urandom(2), "big")
@@ -162,16 +196,24 @@ def query_dns(name: str, qtype: str = "TXT", server: str = "8.8.8.8", timeout: f
         sock.sendto(pkt, (server, 53))
         resp, _ = sock.recvfrom(4096)
     except Exception:
-        if server != "1.1.1.1":
-            sock.close()
-            return query_dns(name, qtype, "1.1.1.1", timeout)
-        return []
-    finally:
         sock.close()
+        if server != "1.1.1.1":
+            return query_dns(name, qtype, "1.1.1.1", timeout)
+        return _query_doh(name, qtype)
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
 
     if len(resp) < 12:
-        return []
+        return _query_doh(name, qtype)
     _, flags, qdcount, ancount, _, _ = struct.unpack("!HHHHHH", resp[:12])
+    if flags & 0x0200:  # TC (truncated UDP response > 512 bytes, common on large DKIM keys)
+        doh = _query_doh(name, qtype)
+        if doh:
+            return doh
+
     pos = 12
     for _ in range(qdcount):
         _, pos = _decode_name(resp, pos)
@@ -212,6 +254,8 @@ def query_dns(name: str, qtype: str = "TXT", server: str = "8.8.8.8", timeout: f
             if rtype == qcode:
                 results.append(".".join(str(b) for b in rdata))
         pos = pos_end
+    if not results and server == "8.8.8.8":
+        return _query_doh(name, qtype)
     return results
 
 
@@ -511,32 +555,34 @@ def _sync_cf_zone(zone_id: str, domain_name: str, domain_obj: dict, cf_rt: dict 
             res = cf_api("POST", f"/zones/{zone_id}/dns_records", payload)
             logs.append(f"Tạo mới {r_type} {r_name}: {'OK' if res.get('success') else res.get('errors')}")
 
-    # Ensure Webmail CNAME mail.<domain> -> Cloudflare Tunnel
+    # Ensure Webmail CNAME mail.<domain> -> Cloudflare Tunnel (or A -> Public IP if direct VPS)
     webmail_host = f"mail.{domain_name}"
-    if tun_target:
+    pub_ip = _get_public_ip() if not tun_target else ""
+    if tun_target or pub_ip:
         wm_matches = [
             x for x in existing
             if x.get("name") == webmail_host and x.get("type") in ("CNAME", "A", "AAAA")
         ]
         wm_payload = {
-            "type": "CNAME",
+            "type": "CNAME" if tun_target else "A",
             "name": webmail_host,
-            "content": tun_target,
+            "content": tun_target or pub_ip,
             "ttl": 1,
             "proxied": True,
             "comment": "Vmail Webmail Multi-Domain",
         }
         if not wm_matches:
             res = cf_api("POST", f"/zones/{zone_id}/dns_records", wm_payload)
-            logs.append(f"Tạo Webmail CNAME {webmail_host}: {'OK' if res.get('success') else res.get('errors')}")
-        elif len(wm_matches) == 1 and wm_matches[0].get("type") == "CNAME":
+            logs.append(f"Tạo Webmail {wm_payload['type']} {webmail_host}: {'OK' if res.get('success') else res.get('errors')}")
+        elif len(wm_matches) == 1 and wm_matches[0].get("type") == wm_payload["type"]:
             cur = wm_matches[0]
             cur_c = str(cur.get("content") or "").strip(".")
-            if cur_c == tun_target and cur.get("proxied") is True:
-                logs.append(f"Đã khớp Webmail CNAME {webmail_host}")
-            elif "cfargotunnel.com" in cur_c or cur_c == tun_target:
+            target_c = tun_target or pub_ip
+            if cur_c == target_c and cur.get("proxied") is True:
+                logs.append(f"Đã khớp Webmail {wm_payload['type']} {webmail_host}")
+            elif (tun_target and "cfargotunnel.com" in cur_c) or cur_c == target_c:
                 res = cf_api("PUT", f"/zones/{zone_id}/dns_records/{cur['id']}", wm_payload)
-                logs.append(f"Cập nhật Webmail CNAME {webmail_host}: {'OK' if res.get('success') else res.get('errors')}")
+                logs.append(f"Cập nhật Webmail {wm_payload['type']} {webmail_host}: {'OK' if res.get('success') else res.get('errors')}")
             else:
                 logs.append(f"Giữ nguyên {webmail_host} (đang trỏ {cur.get('type')} -> {cur_c})")
         else:
@@ -580,18 +626,47 @@ def fix_single_domain(domain_name: str):
         domains = jmap_client.list_domains()
         dom_obj = next((d for d in domains if d.get("name") == domain_name), created)
     logs = _sync_cf_zone(zone["id"], domain_name, dom_obj, cf_rt=cf_rt)
-    tun_res = ensure_webmail_tunnel_hostnames([f"mail.{domain_name}"])
+    if cf_rt.get("tunnel_id"):
+        tun_res = ensure_webmail_tunnel_hostnames([f"mail.{domain_name}"])
+    else:
+        tun_res = {"ok": True, "added": [], "message": "Bỏ qua Tunnel Ingress (không dùng Tunnel ID)"}
     logs.append(tun_res.get("message") or "Tunnel checked")
     er_status = next((x for x in logs if "Worker" in x or "Email Routing" in x), f"Worker {cf_rt['inbound_worker']} OK")
     return {"domain": domain_name, "logs": logs, "email_routing": er_status, "tunnel": tun_res, "dns": check_domain_dns(dom_obj)}
 
 
+def _list_all_cf_zones():
+    all_zones = []
+    page = 1
+    while True:
+        res = cf_api("GET", f"/zones?per_page=50&page={page}")
+        if not res.get("success"):
+            raise RuntimeError(str(res.get("errors") or "Lỗi kết nối Cloudflare API"))
+        batch = res.get("result") or []
+        all_zones.extend(batch)
+        info = res.get("result_info") or {}
+        total_pages = int(info.get("total_pages") or 1)
+        if page >= total_pages or not batch:
+            break
+        page += 1
+    return all_zones
+
+
+def _get_public_ip():
+    if os.path.exists(VMAIL_CFG):
+        try:
+            with open(VMAIL_CFG, "r", encoding="utf-8") as f:
+                ip = (json.load(f).get("public_ip") or "").strip()
+            if ip:
+                return ip
+        except Exception:
+            pass
+    return ""
+
+
 def sync_all_cloudflare():
     cf_rt = _resolve_cf_runtime()
-    zones_res = cf_api("GET", "/zones?per_page=50")
-    if not zones_res.get("success"):
-        raise RuntimeError(str(zones_res.get("errors") or "Lỗi kết nối Cloudflare API"))
-    zones = zones_res.get("result") or []
+    zones = _list_all_cf_zones()
     domains = jmap_client.list_domains()
     by_name = {d["name"]: d for d in domains}
     added = []
@@ -608,7 +683,10 @@ def sync_all_cloudflare():
         dom_obj = by_name[dname]
         logs = _sync_cf_zone(z["id"], dname, dom_obj, cf_rt=cf_rt)
         summary.append({"domain": dname, "logs": logs})
-    tun_res = ensure_webmail_tunnel_hostnames(webmail_hosts)
+    if cf_rt.get("tunnel_id"):
+        tun_res = ensure_webmail_tunnel_hostnames(webmail_hosts)
+    else:
+        tun_res = {"ok": True, "added": [], "message": "Bỏ qua Tunnel Ingress (không dùng Cloudflare Tunnel ID)"}
     return {
         "total_cf_zones": len(zones),
         "added_domains": added,

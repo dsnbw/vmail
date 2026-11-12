@@ -32,6 +32,8 @@ $config['useragent'] = 'Vmail Webmail';
 $config['enable_installer'] = false;
 $config['x_frame_options'] = 'sameorigin';
 $config['des_key'] = '{{DES_KEY}}';
+$config['session_lifetime'] = 120;
+$config['ip_check'] = false;
 
 $config['plugins'] = [
     'archive',

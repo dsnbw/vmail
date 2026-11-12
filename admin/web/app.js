@@ -1183,9 +1183,15 @@ Tên đăng nhập:           Địa chỉ email đầy đủ (ví dụ admin@${
       );
       body.querySelectorAll(".act-del-ct").forEach((b) =>
         b.addEventListener("click", async () => {
-          await api(`/api/contacts/${encodeURIComponent(b.dataset.id)}`, { method: "DELETE" });
-          toast("Đã xóa liên hệ.");
-          renderMarketing();
+          b.disabled = true;
+          try {
+            await api(`/api/contacts/${encodeURIComponent(b.dataset.id)}`, { method: "DELETE" });
+            toast("Đã xóa liên hệ.");
+            renderMarketing();
+          } catch (err) {
+            toast(err.message, "err");
+            b.disabled = false;
+          }
         })
       );
       $("btn-new-list").addEventListener("click", () => {
@@ -1199,13 +1205,21 @@ Tên đăng nhập:           Địa chỉ email đầy đủ (ví dụ admin@${
           (box) => {
             box.querySelector("#nl-form").addEventListener("submit", async (e) => {
               e.preventDefault();
-              const r = await api("/api/lists", {
-                method: "POST",
-                body: JSON.stringify({ name: box.querySelector("#nl-name").value.trim(), description: box.querySelector("#nl-desc").value.trim() }),
-              });
-              state.selectedListId = r.id;
-              closeModal();
-              renderMarketing();
+              const subBtn = box.querySelector("#nl-form button[type='submit']");
+              if (subBtn) subBtn.disabled = true;
+              try {
+                const r = await api("/api/lists", {
+                  method: "POST",
+                  body: JSON.stringify({ name: box.querySelector("#nl-name").value.trim(), description: box.querySelector("#nl-desc").value.trim() }),
+                });
+                state.selectedListId = r.id;
+                toast("Đã tạo nhóm danh bạ!");
+                closeModal();
+                renderMarketing();
+              } catch (err) {
+                toast(err.message, "err");
+                if (subBtn) subBtn.disabled = false;
+              }
             });
           }
         );
@@ -1223,17 +1237,24 @@ Tên đăng nhập:           Địa chỉ email đầy đủ (ví dụ admin@${
           (box) => {
             box.querySelector("#imp-form").addEventListener("submit", async (e) => {
               e.preventDefault();
-              const r = await api("/api/contacts/import", {
-                method: "POST",
-                body: JSON.stringify({
-                  list_id: state.selectedListId || "list_default",
-                  raw: box.querySelector("#imp-raw").value,
-                  tags: box.querySelector("#imp-tags").value.trim(),
-                }),
-              });
-              toast(`Đã thêm ${r.added} liên hệ (bỏ qua ${r.skipped} dòng trùng/lỗi).`);
-              closeModal();
-              renderMarketing();
+              const subBtn = box.querySelector("#imp-form button[type='submit']");
+              if (subBtn) subBtn.disabled = true;
+              try {
+                const r = await api("/api/contacts/import", {
+                  method: "POST",
+                  body: JSON.stringify({
+                    list_id: state.selectedListId || "list_default",
+                    raw: box.querySelector("#imp-raw").value,
+                    tags: box.querySelector("#imp-tags").value.trim(),
+                  }),
+                });
+                toast(`Đã thêm ${r.added} liên hệ (bỏ qua ${r.skipped} dòng trùng/lỗi).`);
+                closeModal();
+                renderMarketing();
+              } catch (err) {
+                toast(err.message, "err");
+                if (subBtn) subBtn.disabled = false;
+              }
             });
           }
         );
@@ -1280,18 +1301,25 @@ Tên đăng nhập:           Địa chỉ email đầy đủ (ví dụ admin@${
           (box) => {
             box.querySelector("#tpl-form").addEventListener("submit", async (e) => {
               e.preventDefault();
-              await api("/api/templates", {
-                method: "POST",
-                body: JSON.stringify({
-                  id: tpl.id || "",
-                  name: box.querySelector("#tp-name").value.trim(),
-                  subject: box.querySelector("#tp-sub").value.trim(),
-                  html_body: box.querySelector("#tp-html").value,
-                }),
-              });
-              toast("Đã lưu mẫu Email!");
-              closeModal();
-              renderMarketing();
+              const subBtn = box.querySelector("#tpl-form button[type='submit']");
+              if (subBtn) subBtn.disabled = true;
+              try {
+                await api("/api/templates", {
+                  method: "POST",
+                  body: JSON.stringify({
+                    id: tpl.id || "",
+                    name: box.querySelector("#tp-name").value.trim(),
+                    subject: box.querySelector("#tp-sub").value.trim(),
+                    html_body: box.querySelector("#tp-html").value,
+                  }),
+                });
+                toast("Đã lưu mẫu Email!");
+                closeModal();
+                renderMarketing();
+              } catch (err) {
+                toast(err.message, "err");
+                if (subBtn) subBtn.disabled = false;
+              }
             });
           }
         );
@@ -1304,9 +1332,15 @@ Tên đăng nhập:           Địa chỉ email đầy đủ (ví dụ admin@${
       body.querySelectorAll(".act-del-tpl").forEach((b) =>
         b.addEventListener("click", async () => {
           if (!confirm("Xóa mẫu email này?")) return;
-          await api(`/api/templates/${encodeURIComponent(b.dataset.id)}`, { method: "DELETE" });
-          toast("Đã xóa mẫu email.");
-          renderMarketing();
+          b.disabled = true;
+          try {
+            await api(`/api/templates/${encodeURIComponent(b.dataset.id)}`, { method: "DELETE" });
+            toast("Đã xóa mẫu email.");
+            renderMarketing();
+          } catch (err) {
+            toast(err.message, "err");
+            b.disabled = false;
+          }
         })
       );
     }
@@ -1396,48 +1430,82 @@ Tên đăng nhập:           Địa chỉ email đầy đủ (ví dụ admin@${
 
     $("spam-form").addEventListener("submit", async (e) => {
       e.preventDefault();
-      await api("/api/spam/settings", {
-        method: "POST",
-        body: JSON.stringify({
-          enable: $("sp-en").checked,
-          scoreSpam: Number($("sp-s1").value),
-          scoreDiscard: Number($("sp-s2").value),
-          scoreReject: Number($("sp-s3").value),
-          trustContacts: $("sp-tc").checked,
-          trustReplies: $("sp-tr").checked,
-        }),
-      });
-      toast("Đã lưu cấu hình Anti-Spam!");
+      const subBtn = $("spam-form").querySelector("button[type='submit']");
+      if (subBtn) subBtn.disabled = true;
+      try {
+        await api("/api/spam/settings", {
+          method: "POST",
+          body: JSON.stringify({
+            enable: $("sp-en").checked,
+            scoreSpam: Number($("sp-s1").value),
+            scoreDiscard: Number($("sp-s2").value),
+            scoreReject: Number($("sp-s3").value),
+            trustContacts: $("sp-tc").checked,
+            trustReplies: $("sp-tr").checked,
+          }),
+        });
+        toast("Đã lưu cấu hình Anti-Spam!");
+      } catch (err) {
+        toast(err.message, "err");
+      } finally {
+        if (subBtn) subBtn.disabled = false;
+      }
     });
 
     $("wl-form").addEventListener("submit", async (e) => {
       e.preventDefault();
-      await api("/api/spam/domain-list", { method: "POST", body: JSON.stringify({ namespace: "trusted-domains", key: $("wl-key").value.trim() }) });
-      toast("Đã thêm Whitelist!");
-      renderSpam();
+      const subBtn = $("wl-form").querySelector("button[type='submit']");
+      if (subBtn) subBtn.disabled = true;
+      try {
+        await api("/api/spam/domain-list", { method: "POST", body: JSON.stringify({ namespace: "trusted-domains", key: $("wl-key").value.trim() }) });
+        toast("Đã thêm Whitelist!");
+        renderSpam();
+      } catch (err) {
+        toast(err.message, "err");
+        if (subBtn) subBtn.disabled = false;
+      }
     });
 
     $("bl-form").addEventListener("submit", async (e) => {
       e.preventDefault();
-      await api("/api/spam/domain-list", { method: "POST", body: JSON.stringify({ namespace: "blocked-domains", key: $("bl-key").value.trim() }) });
-      toast("Đã thêm Blacklist!");
-      renderSpam();
+      const subBtn = $("bl-form").querySelector("button[type='submit']");
+      if (subBtn) subBtn.disabled = true;
+      try {
+        await api("/api/spam/domain-list", { method: "POST", body: JSON.stringify({ namespace: "blocked-domains", key: $("bl-key").value.trim() }) });
+        toast("Đã thêm Blacklist!");
+        renderSpam();
+      } catch (err) {
+        toast(err.message, "err");
+        if (subBtn) subBtn.disabled = false;
+      }
     });
 
     el.querySelectorAll(".act-del-mkey").forEach((b) =>
       b.addEventListener("click", async () => {
-        await api(`/api/spam/domain-list/${encodeURIComponent(b.dataset.id)}`, { method: "DELETE" });
-        toast("Đã xóa khỏi danh sách.");
-        renderSpam();
+        b.disabled = true;
+        try {
+          await api(`/api/spam/domain-list/${encodeURIComponent(b.dataset.id)}`, { method: "DELETE" });
+          toast("Đã xóa khỏi danh sách.");
+          renderSpam();
+        } catch (err) {
+          toast(err.message, "err");
+          b.disabled = false;
+        }
       })
     );
 
     el.querySelectorAll(".act-lk-toggle").forEach((b) =>
       b.addEventListener("click", async () => {
         const nextEn = b.dataset.en !== "1";
-        await api("/api/spam/lookup-toggle", { method: "POST", body: JSON.stringify({ id: b.dataset.id, enable: nextEn }) });
-        toast("Đã cập nhật bộ lọc URL.");
-        renderSpam();
+        b.disabled = true;
+        try {
+          await api("/api/spam/lookup-toggle", { method: "POST", body: JSON.stringify({ id: b.dataset.id, enable: nextEn }) });
+          toast("Đã cập nhật bộ lọc URL.");
+          renderSpam();
+        } catch (err) {
+          toast(err.message, "err");
+          b.disabled = false;
+        }
       })
     );
   }
@@ -1514,9 +1582,15 @@ Tên đăng nhập:           Địa chỉ email đầy đủ (ví dụ admin@${
     $("logs-reload").addEventListener("click", renderLogs);
     el.querySelectorAll(".act-del-q").forEach((b) =>
       b.addEventListener("click", async () => {
-        await api(`/api/queue/${encodeURIComponent(b.dataset.id)}`, { method: "DELETE" });
-        toast("Đã xóa thư khỏi hàng đợi.");
-        renderLogs();
+        b.disabled = true;
+        try {
+          await api(`/api/queue/${encodeURIComponent(b.dataset.id)}`, { method: "DELETE" });
+          toast("Đã xóa thư khỏi hàng đợi.");
+          renderLogs();
+        } catch (err) {
+          toast(err.message, "err");
+          b.disabled = false;
+        }
       })
     );
   }

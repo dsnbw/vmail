@@ -44,11 +44,24 @@ flowchart LR
 
 ---
 
-## 💻 Yêu cầu hệ thống
+## 💻 Tương thích đa hệ điều hành & Phần cứng
 
-- **Hệ điều hành:** Ubuntu 22.04 / 24.04 LTS hoặc Debian 11 / 12 (hỗ trợ cả VPS, VM và môi trường Linux container/PRoot).
-- **CPU / RAM tối thiểu:** 1 vCPU, 1 GB RAM (toàn bộ stack Vmail Core + Control Panel + Inbound Bridge chỉ tiêu thụ ~240 MB RAM).
-- **Kiến trúc hỗ trợ:** `x86_64` (`amd64`), `aarch64` (`arm64`), `armv7l`.
+`install.sh` tự động nhận diện hệ điều hành, trình quản lý gói, thư viện C (`glibc`/`musl`), init system (`systemd`/`OpenRC`/standalone), SELinux/Firewall và tự khắc phục xung đột cổng hoặc database:
+
+| Hệ điều hành | Phiên bản hỗ trợ | Gói & Init System | Cổng Web & DB |
+|---|---|---|---|
+| **Ubuntu / Debian** | Ubuntu 20.04–24.04+, Debian 11/12/13, Armbian | `apt`, `systemd` / PRoot | MariaDB hoặc SQLite |
+| **RHEL / Rocky / Alma / CentOS / Fedora / Amazon Linux** | EL8 / EL9 / Fedora / AL2023 | `dnf` / `yum`, `systemd`, auto SELinux + `firewalld` | MariaDB hoặc SQLite |
+| **Alpine Linux** | Alpine 3.18 – 3.21+ | `apk`, `musl` binary, `OpenRC` | MariaDB hoặc SQLite |
+| **Arch Linux / Manjaro** | Rolling | `pacman`, `systemd` | MariaDB hoặc SQLite |
+
+- **Kiến trúc CPU hỗ trợ:** `x86_64` (`amd64`), `aarch64` (`arm64`), `armv7l` (`armhf`) — cả bản `gnu` lẫn `musl`.
+- **Tài nguyên tối thiểu:** 1 vCPU, 512 MB–1 GB RAM (~220–240 MB RAM toàn bộ stack).
+- **Cơ chế tự khắc phục (Self-Healing):**
+  - Tự hoàn tất Bootstrap Mode trên server trắng, cấp phát listener tách cổng (`8090` thay `8080`) để không đụng Nginx.
+  - Tự động chuyển sang **SQLite** cho Webmail nếu VPS ít RAM/container không chạy được MariaDB.
+  - Tự phát hiện socket PHP-FPM (`unix:` hoặc `127.0.0.1:9000`), quyền user web (`www-data`/`nginx`/`apache`/`http`), SELinux boolean và firewalld.
+  - Tự kiểm tra sức khỏe toàn bộ endpoint & sinh xác minh ngay sau khi cài đặt (`vmail doctor`).
 
 ---
 
@@ -92,6 +105,9 @@ Sau khi cài đặt hoàn tất:
 
 ```bash
 vmail status                       # Kiểm tra RAM, Disk, tiến trình, cổng dịch vụ & thống kê
+vmail doctor                       # Tự chẩn đoán toàn bộ tiến trình, cổng & tệp cấu hình
+vmail start | stop | restart       # Điều khiển nhanh toàn bộ dịch vụ (systemd / OpenRC / standalone)
+vmail logs [-n 40]                 # Xem nhanh nhật ký gửi/nhận mail mới nhất
 vmail domains                      # Liệt kê danh sách tên miền & Catch-All
 vmail accounts                     # Liệt kê toàn bộ hộp thư, quyền hạn & quota
 vmail add user@example.com         # Tạo nhanh hộp thư mới

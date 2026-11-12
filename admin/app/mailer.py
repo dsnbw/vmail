@@ -232,44 +232,37 @@ class CampaignWorker(threading.Thread):
             time.sleep(1.5)
 
     def _tick(self):
-        conn = db.get_conn()
-        camp = conn.execute("SELECT * FROM campaigns WHERE status='running' ORDER BY started_at ASC LIMIT 1").fetchone()
-        if not camp:
-            conn.close()
-            return
+        with db.session(commit=True) as conn:
+            camp = conn.execute("SELECT * FROM campaigns WHERE status='running' ORDER BY started_at ASC LIMIT 1").fetchone()
+            if not camp:
+                return
 
-        # Respect daily limit
-        day_start = int(datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
-        sent_today = conn.execute(
-            "SELECT COUNT(*) FROM campaign_items WHERE campaign_id=? AND status='sent' AND sent_at>=?",
-            (camp["id"], day_start),
-        ).fetchone()[0]
-        if camp["daily_limit"] > 0 and sent_today >= camp["daily_limit"]:
-            conn.execute("UPDATE campaigns SET status='paused', last_error=? WHERE id=?", (f"Đã đạt giới hạn {camp['daily_limit']} thư/ngày để bảo vệ uy tín gửi.", camp["id"]))
-            conn.commit()
-            conn.close()
-            return
+            # Respect daily limit
+            day_start = int(datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+            sent_today = conn.execute(
+                "SELECT COUNT(*) FROM campaign_items WHERE campaign_id=? AND status='sent' AND sent_at>=?",
+                (camp["id"], day_start),
+            ).fetchone()[0]
+            if camp["daily_limit"] > 0 and sent_today >= camp["daily_limit"]:
+                conn.execute(
+                    "UPDATE campaigns SET status='paused', last_error=? WHERE id=?",
+                    (f"Đã đạt giới hạn {camp['daily_limit']} thư/ngày để bảo vệ uy tín gửi.", camp["id"]),
+                )
+                return
 
-        item = conn.execute(
-            "SELECT * FROM campaign_items WHERE campaign_id=? AND status='pending' LIMIT 1",
-            (camp["id"],),
-        ).fetchone()
+            item = conn.execute(
+                "SELECT * FROM campaign_items WHERE campaign_id=? AND status='pending' LIMIT 1",
+                (camp["id"],),
+            ).fetchone()
 
-        if not item:
-            conn.execute("UPDATE campaigns SET status='completed', finished_at=? WHERE id=?", (int(time.time()), camp["id"]))
-            conn.commit()
-            conn.close()
-            return
+            if not item:
+                conn.execute("UPDATE campaigns SET status='completed', finished_at=? WHERE id=?", (int(time.time()), camp["id"]))
+                return
 
-        tpl = conn.execute("SELECT * FROM templates WHERE id=?", (camp["template_id"],)).fetchone()
-        conn.close()
-
-        if not tpl:
-            conn2 = db.get_conn()
-            conn2.execute("UPDATE campaigns SET status='failed', last_error='Không tìm thấy mẫu email.' WHERE id=?", (camp["id"],))
-            conn2.commit()
-            conn2.close()
-            return
+            tpl = conn.execute("SELECT * FROM templates WHERE id=?", (camp["template_id"],)).fetchone()
+            if not tpl:
+                conn.execute("UPDATE campaigns SET status='failed', last_error='Không tìm thấy mẫu email.' WHERE id=?", (camp["id"],))
+                return
 
         name_val = item["name"] or item["email"].split("@")[0]
         public_base = _get_public_base(camp["from_email"])
@@ -286,31 +279,41 @@ class CampaignWorker(threading.Thread):
             body_html += pixel
 
         now = int(time.time())
-        try:
-            send_email(
-                from_email=camp["from_email"],
-                from_name=camp["from_name"],
-                to_email=item["email"],
-                subject=subj,
-                html_body=body_html,
-                text_body=body_txt,
-                reply_to=camp["reply_to"],
-                unsub_url=unsub_url if camp["include_unsub"] else "",
-                source="campaign",
-                verify_delivery=False,
-            )
-            conn3 = db.get_conn()
-            conn3.execute("UPDATE campaign_items SET status='sent', sent_at=? WHERE id=?", (now, item["id"]))
-            conn3.execute("UPDATE campaigns SET sent_count=sent_count+1 WHERE id=?", (camp["id"],))
-            conn3.commit()
-            conn3.close()
-        except Exception as e:
-            err_msg = str(e)[:240]
-            conn3 = db.get_conn()
-            conn3.execute("UPDATE campaign_items SET status='failed', error=?, sent_at=? WHERE id=?", (err_msg, now, item["id"]))
-            conn3.execute("UPDATE campaigns SET failed_count=failed_count+1, last_error=? WHERE id=?", (err_msg, camp["id"]))
-            conn3.commit()
-            conn3.close()
+        last_err = None
+        for attempt in range(2):
+            try:
+                send_email(
+                    from_email=camp["from_email"],
+                    from_name=camp["from_name"],
+                    to_email=item["email"],
+                    subject=subj,
+                    html_body=body_html,
+                    text_body=body_txt,
+                    reply_to=camp["reply_to"],
+                    unsub_url=unsub_url if camp["include_unsub"] else "",
+                    source="campaign",
+                    verify_delivery=False,
+                )
+                last_err = None
+                break
+            except smtplib.SMTPResponseException as e:
+                last_err = e
+                if 400 <= e.smtp_code < 500 and attempt == 0:
+                    time.sleep(2.0)
+                    continue
+                break
+            except Exception as e:
+                last_err = e
+                break
+
+        with db.session(commit=True) as conn3:
+            if last_err is None:
+                conn3.execute("UPDATE campaign_items SET status='sent', sent_at=? WHERE id=?", (now, item["id"]))
+                conn3.execute("UPDATE campaigns SET sent_count=sent_count+1 WHERE id=?", (camp["id"],))
+            else:
+                err_msg = str(last_err)[:240]
+                conn3.execute("UPDATE campaign_items SET status='failed', error=?, sent_at=? WHERE id=?", (err_msg, now, item["id"]))
+                conn3.execute("UPDATE campaigns SET failed_count=failed_count+1, last_error=? WHERE id=?", (err_msg, camp["id"]))
 
         delay_sec = max(0.3, min(30.0, (camp["delay_ms"] or 1500) / 1000.0))
         time.sleep(delay_sec)

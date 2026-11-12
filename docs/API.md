@@ -15,7 +15,7 @@ Phản hồi mẫu:
 {
   "ok": true,
   "service": "Vmail",
-  "version": "1.0.0"
+  "version": "1.1.0"
 }
 ```
 
@@ -115,4 +115,4 @@ print(resp.json())
 - Hỗ trợ giới hạn **IP / CIDR Allowlist** và **Daily Quota** trên từng API Key.
 - Xác thực tên miền người gửi (`from`) thuộc danh sách tên miền nội bộ Vmail nhằm chống giả mạo domain ngoài.
 - Kiểm tra chặt ký tự CR/LF (`\r`, `\n`, `\x00`) ngăn **SMTP Header Injection**.
-- Phiên quản trị `/admin/api/*` ký HMAC-SHA256, cookie `HttpOnly; SameSite=Lax; Secure`, kết hợp rate-limit chống brute-force.
+- Phiên quản trị `/admin/api/*` ký HMAC-SHA256, cookie `HttpOnly; SameSite=Lax; Secure`, bảo vệ **Same-Origin CSRF** trên toàn bộ request `POST`/`PATCH`/`DELETE`, kết hợp rate-limit chống brute-force.

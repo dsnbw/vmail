@@ -3,6 +3,12 @@ map $http_upgrade $mail_connection_upgrade {
     '' close;
 }
 
+map $http_x_forwarded_proto $vmail_https {
+    default $https;
+    https on;
+    http '';
+}
+
 server {
     listen {{HTTP_PORT}};
     listen [::]:{{HTTP_PORT}};
@@ -89,11 +95,14 @@ server {
     }
 
     location ~ \.php$ {
-        include snippets/fastcgi-php.conf;
+        try_files $uri =404;
+        fastcgi_split_path_info ^(.+\.php)(/.+)$;
         fastcgi_pass {{PHP_FPM_SOCK}};
-        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_index index.php;
         include fastcgi_params;
-        fastcgi_param HTTPS on;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param PATH_INFO $fastcgi_path_info;
+        fastcgi_param HTTPS $vmail_https;
         fastcgi_connect_timeout 60;
         fastcgi_send_timeout 180;
         fastcgi_read_timeout 180;

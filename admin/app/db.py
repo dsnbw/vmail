@@ -1,4 +1,5 @@
 import base64
+from contextlib import contextmanager
 import hashlib
 import hmac
 import os
@@ -7,8 +8,8 @@ import sqlite3
 import threading
 import time
 
-DATA_DIR = "/opt/vmail/data"
-ETC_DIR = "/etc/vmail"
+DATA_DIR = os.environ.get("VMAIL_DATA_DIR", "/opt/vmail/data")
+ETC_DIR = os.environ.get("VMAIL_ETC_DIR", "/etc/vmail")
 DB_PATH = os.path.join(DATA_DIR, "vmail.db")
 SECRET_PATH = os.path.join(ETC_DIR, "secret.key")
 
@@ -22,15 +23,30 @@ def ensure_dirs():
 
 def get_master_secret() -> bytes:
     ensure_dirs()
-    if os.path.exists(SECRET_PATH):
-        raw = open(SECRET_PATH, "rb").read().strip()
-        if len(raw) >= 32:
-            return raw
-    key = secrets.token_hex(32).encode("ascii")
-    fd = os.open(SECRET_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(key)
-    return key
+    with _LOCK:
+        if os.path.exists(SECRET_PATH):
+            raw = open(SECRET_PATH, "rb").read().strip()
+            if len(raw) >= 32:
+                return raw
+        key = secrets.token_hex(32).encode("ascii")
+        tmp_path = f"{SECRET_PATH}.tmp.{os.getpid()}.{threading.get_ident()}"
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(key)
+            try:
+                os.link(tmp_path, SECRET_PATH)
+            except FileExistsError:
+                pass
+            except OSError:
+                if not os.path.exists(SECRET_PATH):
+                    os.replace(tmp_path, SECRET_PATH)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        return open(SECRET_PATH, "rb").read().strip()
 
 
 def encrypt_secret(plaintext: str) -> str:
@@ -68,16 +84,35 @@ def get_conn() -> sqlite3.Connection:
     ensure_dirs()
     conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=15.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=10000;")
     conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
 
 
+@contextmanager
+def session(commit: bool = False):
+    conn = get_conn()
+    try:
+        yield conn
+        if commit:
+            conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
 def init_db():
     with _LOCK:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.executescript(
+        with session(commit=True) as conn:
+            cur = conn.cursor()
+            cur.executescript(
             """
             CREATE TABLE IF NOT EXISTS api_keys (
                 id TEXT PRIMARY KEY,
@@ -186,62 +221,59 @@ def init_db():
         )
 
         # Seed default contact list & 3 starter templates if empty
-        now = int(time.time())
-        if cur.execute("SELECT COUNT(*) FROM contact_lists").fetchone()[0] == 0:
-            cur.execute(
-                "INSERT INTO contact_lists(id, name, description, created_at) VALUES (?,?,?,?)",
-                ("list_default", "Khách hàng mặc định", "Danh sách liên hệ khởi tạo sẵn của Vmail", now),
-            )
+            now = int(time.time())
+            if cur.execute("SELECT COUNT(*) FROM contact_lists").fetchone()[0] == 0:
+                cur.execute(
+                    "INSERT INTO contact_lists(id, name, description, created_at) VALUES (?,?,?,?)",
+                    ("list_default", "Khách hàng mặc định", "Danh sách liên hệ khởi tạo sẵn của Vmail", now),
+                )
 
-        if cur.execute("SELECT COUNT(*) FROM templates").fetchone()[0] == 0:
-            starters = [
-                (
-                    "tpl_notify",
-                    "Thông báo hệ thống / Giao dịch",
-                    "[Thông báo] Cập nhật tài khoản của {{name}}",
-                    """<div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;padding:24px;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;color:#1f2937">
+            if cur.execute("SELECT COUNT(*) FROM templates").fetchone()[0] == 0:
+                starters = [
+                    (
+                        "tpl_notify",
+                        "Thông báo hệ thống / Giao dịch",
+                        "[Thông báo] Cập nhật tài khoản của {{name}}",
+                        """<div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;padding:24px;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;color:#1f2937">
   <h2 style="margin:0 0 12px;color:#1a73e8">Xin chào {{name}},</h2>
   <p style="line-height:1.6">Hệ thống vừa ghi nhận cập nhật mới cho địa chỉ email <strong>{{email}}</strong>.</p>
   <p style="line-height:1.6">Nếu bạn cần hỗ trợ thêm, vui lòng phản hồi trực tiếp email này.</p>
   <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0"/>
   <p style="font-size:12px;color:#6b7280">Gửi từ hệ thống Vmail.</p>
 </div>""",
-                    "Xin chào {{name}},\n\nHệ thống vừa ghi nhận cập nhật mới cho {{email}}.",
-                ),
-                (
-                    "tpl_welcome",
-                    "Chào mừng thành viên mới",
-                    "Chào mừng {{name}} đến với hệ thống của chúng tôi!",
-                    """<div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;padding:28px;background:#f8fafc;border-radius:12px;color:#0f172a">
+                        "Xin chào {{name}},\n\nHệ thống vừa ghi nhận cập nhật mới cho {{email}}.",
+                    ),
+                    (
+                        "tpl_welcome",
+                        "Chào mừng thành viên mới",
+                        "Chào mừng {{name}} đến với hệ thống của chúng tôi!",
+                        """<div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;padding:28px;background:#f8fafc;border-radius:12px;color:#0f172a">
   <div style="background:#ffffff;padding:24px;border-radius:10px;border:1px solid #e2e8f0">
     <h2 style="margin-top:0;color:#0b57d0">Chào mừng {{name}}!</h2>
     <p style="line-height:1.6">Cảm ơn bạn đã đăng ký nhận tin qua địa chỉ <strong>{{email}}</strong>.</p>
     <p style="line-height:1.6">Chúng tôi sẽ gửi tới bạn những cập nhật hữu ích và kịp thời nhất.</p>
   </div>
 </div>""",
-                    "Chào mừng {{name}}! Cảm ơn bạn đã đăng ký với {{email}}.",
-                ),
-                (
-                    "tpl_newsletter",
-                    "Bản tin / Chiến dịch ưu đãi",
-                    "Cập nhật mới dành riêng cho {{name}}",
-                    """<div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;padding:24px;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;color:#1f2937">
+                        "Chào mừng {{name}}! Cảm ơn bạn đã đăng ký với {{email}}.",
+                    ),
+                    (
+                        "tpl_newsletter",
+                        "Bản tin / Chiến dịch ưu đãi",
+                        "Cập nhật mới dành riêng cho {{name}}",
+                        """<div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;padding:24px;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;color:#1f2937">
   <span style="display:inline-block;padding:4px 10px;background:#e8f0fe;color:#1a73e8;border-radius:999px;font-size:12px;font-weight:bold">BẢN TIN MỚI</span>
   <h2 style="margin:12px 0;color:#111827">Kính gửi {{name}},</h2>
   <p style="line-height:1.65">Đây là bản tin mới nhất được thiết kế gọn nhẹ, tối ưu tỷ lệ vào Inbox và hiển thị chuẩn trên Webmail.</p>
   <p style="margin-top:20px"><a href="{{webmail_url}}" style="display:inline-block;background:#1a73e8;color:#ffffff;text-decoration:none;padding:10px 20px;border-radius:8px;font-weight:600">Xem chi tiết</a></p>
 </div>""",
-                    "Kính gửi {{name}}, xem bản tin mới nhất tại {{webmail_url}}",
-                ),
-            ]
-            for tid, name, subj, html_b, txt_b in starters:
-                cur.execute(
-                    "INSERT INTO templates(id, name, subject, html_body, text_body, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-                    (tid, name, subj, html_b, txt_b, now, now),
-                )
-
-        conn.commit()
-        conn.close()
+                        "Kính gửi {{name}}, xem bản tin mới nhất tại {{webmail_url}}",
+                    ),
+                ]
+                for tid, name, subj, html_b, txt_b in starters:
+                    cur.execute(
+                        "INSERT INTO templates(id, name, subject, html_body, text_body, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+                        (tid, name, subj, html_b, txt_b, now, now),
+                    )
 
 
 def save_sender_cred(email: str, password: str):
@@ -249,35 +281,30 @@ def save_sender_cred(email: str, password: str):
         return
     enc = encrypt_secret(password)
     with _LOCK:
-        conn = get_conn()
-        conn.execute(
-            "INSERT INTO sender_creds(email, encrypted_pass, updated_at) VALUES (?,?,?) "
-            "ON CONFLICT(email) DO UPDATE SET encrypted_pass=excluded.encrypted_pass, updated_at=excluded.updated_at",
-            (email.strip().lower(), enc, int(time.time())),
-        )
-        conn.commit()
-        conn.close()
+        with session(commit=True) as conn:
+            conn.execute(
+                "INSERT INTO sender_creds(email, encrypted_pass, updated_at) VALUES (?,?,?) "
+                "ON CONFLICT(email) DO UPDATE SET encrypted_pass=excluded.encrypted_pass, updated_at=excluded.updated_at",
+                (email.strip().lower(), enc, int(time.time())),
+            )
 
 
 def get_sender_cred(email: str):
-    conn = get_conn()
-    row = conn.execute("SELECT encrypted_pass FROM sender_creds WHERE email=?", (email.strip().lower(),)).fetchone()
-    if not row:
-        row = conn.execute("SELECT email, encrypted_pass FROM sender_creds ORDER BY updated_at DESC LIMIT 1").fetchone()
-        conn.close()
+    target = (email or "").strip().lower()
+    with session(commit=False) as conn:
+        row = conn.execute("SELECT encrypted_pass FROM sender_creds WHERE email=?", (target,)).fetchone()
         if not row:
-            return None, None
-        return row["email"], decrypt_secret(row["encrypted_pass"])
-    conn.close()
-    return email.strip().lower(), decrypt_secret(row["encrypted_pass"])
+            row = conn.execute("SELECT email, encrypted_pass FROM sender_creds ORDER BY updated_at DESC LIMIT 1").fetchone()
+            if not row:
+                return None, None
+            return row["email"], decrypt_secret(row["encrypted_pass"])
+        return target, decrypt_secret(row["encrypted_pass"])
 
 
 def add_send_log(source: str, from_email: str, to_email: str, subject: str, status: str, detail: str = ""):
     with _LOCK:
-        conn = get_conn()
-        conn.execute(
-            "INSERT INTO send_logs(source, from_email, to_email, subject, status, detail, created_at) VALUES (?,?,?,?,?,?,?)",
-            (source, from_email, to_email, subject[:200], status, detail[:500], int(time.time())),
-        )
-        conn.commit()
-        conn.close()
+        with session(commit=True) as conn:
+            conn.execute(
+                "INSERT INTO send_logs(source, from_email, to_email, subject, status, detail, created_at) VALUES (?,?,?,?,?,?,?)",
+                (source, from_email, to_email, (subject or "")[:200], status, (detail or "")[:500], int(time.time())),
+            )
