@@ -287,6 +287,7 @@ def main():
             "scoreSpam": 5.0,
             "scoreDiscard": 12.0,
             "scoreReject": 16.0,
+            "spamFilterRulesUrl": "https://github.com/dsnbw/vmail/releases/download/core-v1.1.0/vmail-spam-filter-rule-v1.json.gz",
         }}}, "spam"],
     ]
     res = jmap_client.jmap_call(calls, eng_user, eng_pass)
