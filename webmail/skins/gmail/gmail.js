@@ -791,14 +791,25 @@
       };
     }
 
-    // Enforce 5-second auto-refresh interval even if an old browser session cached 60s
+    // Enforce 5s active polling + 25s adaptive background polling (Visibility API)
     if (!rcmail.env.framed && !rcmail.env.extwin && rcmail.task !== 'login' && rcmail.env.action !== 'print') {
-      rcmail.env.refresh_interval = 5;
+      var applyRefreshCadence = function () {
+        var targetSec = document.hidden ? 25 : 5;
+        if (rcmail.env.refresh_interval !== targetSec) {
+          rcmail.env.refresh_interval = targetSec;
+          if (typeof rcmail.start_refresh === 'function') {
+            rcmail.start_refresh();
+          }
+        }
+      };
+
+      rcmail.env.refresh_interval = document.hidden ? 25 : 5;
       if (typeof rcmail.start_refresh === 'function') {
         rcmail.start_refresh();
       }
 
       var triggerFocusRefresh = function () {
+        applyRefreshCadence();
         var now = Date.now();
         if (document.hidden || now - lastVisibilityRefresh < 2500 || rcmail.busy) return;
         lastVisibilityRefresh = now;
@@ -813,8 +824,16 @@
     setTimeout(syncTitleAndBadge, 200);
   }
 
+  function initAdminLinks() {
+    var adminUrl = window.location.origin + '/admin/';
+    $('a[data-vmail-admin], a[href*="/skins/gmail/admin"], a[href="skins/gmail/admin/"]').each(function () {
+      $(this).attr({ href: adminUrl, rel: 'noopener' });
+    });
+  }
+
   function boot() {
     initDomainContext();
+    initAdminLinks();
     initAvatar();
     initAccountMenu();
     initThemeToggle();

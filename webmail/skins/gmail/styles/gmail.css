@@ -724,6 +724,8 @@ body.task-mail #layout-list {
     padding: 0 14px 0 8px;
     border-bottom: 1px solid var(--gm-border);
     cursor: pointer;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 42px;
     transition: box-shadow 0.12s ease, background-color 0.1s ease;
   }
 

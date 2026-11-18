@@ -61,14 +61,16 @@ def cmd_status():
     print("Totals:", l["totals"])
 
 
-def cmd_doctor():
+def cmd_doctor(auto_fix: bool = False):
     print("=== VMAIL SELF-DIAGNOSTICS ===")
     h = log_parser.get_system_health()
     all_ok = True
+    down_procs = []
     for p in h["processes"]:
         st = "OK" if p["running"] else "FAIL"
         if not p["running"]:
             all_ok = False
+            down_procs.append(p["name"])
         print(f"[PROC] {p['name']}: {st} ({p['rss_mb']} MB)")
     for k, v in h["ports"].items():
         if not v:
@@ -79,7 +81,26 @@ def cmd_doctor():
         if not ex:
             all_ok = False
         print(f"[CONF] {cfg}: {'OK' if ex else 'MISSING'}")
-    print("Result:", "ALL CHECKS PASSED" if all_ok else "ISSUES DETECTED (see above)")
+
+    if not all_ok and auto_fix:
+        print("\n[AUTO-FIX] Attempting automatic self-healing...")
+        os.makedirs("/var/log/vmail", exist_ok=True)
+        os.makedirs("/etc/vmail", exist_ok=True)
+        for sec in ("/etc/vmail/secret.key", "/etc/vmail/inbound_bridge.secret", "/etc/vmail/engine.json"):
+            if os.path.exists(sec):
+                try:
+                    os.chmod(sec, 0o600)
+                except OSError:
+                    pass
+        if down_procs:
+            _svc_ctrl("restart")
+            import time as _t
+            _t.sleep(2)
+        h2 = log_parser.get_system_health()
+        all_ok = all(p["running"] for p in h2["processes"]) and all(h2["ports"].values())
+        print("[AUTO-FIX] Re-check:", "ALL CHECKS PASSED" if all_ok else "STILL NEEDS ATTENTION")
+
+    print("Result:", "ALL CHECKS PASSED" if all_ok else "ISSUES DETECTED (run: vmail doctor --fix)")
     sys.exit(0 if all_ok else 1)
 
 
@@ -143,7 +164,8 @@ def main():
     p = argparse.ArgumentParser(prog="vmail", description="Vmail Open Mail Server CLI")
     sub = p.add_subparsers(dest="cmd")
     sub.add_parser("status")
-    sub.add_parser("doctor")
+    pd = sub.add_parser("doctor")
+    pd.add_argument("--fix", action="store_true", help="Automatically repair stopped services & permissions")
     sub.add_parser("domains")
     sub.add_parser("accounts")
     sub.add_parser("sync")
@@ -163,7 +185,7 @@ def main():
     if args.cmd == "status":
         cmd_status()
     elif args.cmd == "doctor":
-        cmd_doctor()
+        cmd_doctor(auto_fix=bool(getattr(args, "fix", False)))
     elif args.cmd == "domains":
         cmd_domains()
     elif args.cmd == "accounts":

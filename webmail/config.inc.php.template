@@ -1,4 +1,5 @@
 <?php
+@error_reporting(E_ALL & ~E_NOTICE & ~E_DEPRECATED & ~E_USER_DEPRECATED);
 $config = [];
 $config['db_dsnw'] = '{{DB_DSN}}';
 
@@ -33,7 +34,12 @@ $config['enable_installer'] = false;
 $config['x_frame_options'] = 'sameorigin';
 $config['des_key'] = '{{DES_KEY}}';
 $config['session_lifetime'] = 120;
+$config['session_samesite'] = 'Lax';
 $config['ip_check'] = false;
+
+// High-speed IMAP metadata caching (uses CONDSTORE/QRESYNC on Vmail Core)
+$config['imap_cache'] = 'db';
+$config['imap_cache_ttl'] = '10d';
 
 $config['plugins'] = [
     'archive',

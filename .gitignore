@@ -24,6 +24,7 @@ __pycache__/
 *.tmp
 *.bak
 data/
+dist/
 logs/
 .DS_Store
 Thumbs.db

@@ -1,12 +1,22 @@
 map $http_upgrade $mail_connection_upgrade {
     default upgrade;
-    '' close;
+    '' '';
 }
 
 map $http_x_forwarded_proto $vmail_https {
     default $https;
     https on;
     http '';
+}
+
+upstream vmail_admin_upstream {
+    server 127.0.0.1:8096 max_fails=3 fail_timeout=5s;
+    keepalive 32;
+}
+
+upstream vmail_core_upstream {
+    server 127.0.0.1:8090 max_fails=3 fail_timeout=5s;
+    keepalive 32;
 }
 
 server {
@@ -18,20 +28,37 @@ server {
     client_max_body_size 64m;
     server_tokens off;
 
+    # File metadata caching for high-speed static & PHP delivery
+    open_file_cache max=4096 inactive=60s;
+    open_file_cache_valid 120s;
+    open_file_cache_min_uses 2;
+    open_file_cache_errors on;
+
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
+    # High-efficiency compression (pre-compressed .gz + dynamic level 6)
     gzip on;
-    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript image/svg+xml;
+    gzip_static on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_min_length 256;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript image/svg+xml font/woff2 application/wasm;
 
-    # 1. Vmail Admin Web UI
+    # Defensive redirect for legacy/cached skin admin path
+    location ^~ /skins/gmail/admin {
+        return 301 /admin/;
+    }
+
+    # 1. Vmail Admin Web UI (keepalive pooled upstream)
     location = /admin {
         return 301 /admin/;
     }
 
     location ^~ /admin/ {
-        proxy_pass http://127.0.0.1:8096/;
+        proxy_pass http://vmail_admin_upstream/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -42,7 +69,10 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $mail_connection_upgrade;
         proxy_hide_header Content-Security-Policy;
-        add_header Content-Security-Policy "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; object-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'self';" always;
+        proxy_hide_header Referrer-Policy;
+        proxy_hide_header X-Content-Type-Options;
+        proxy_hide_header X-Frame-Options;
+        add_header Content-Security-Policy "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'inline-speculation-rules'; font-src 'self' data:; object-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'self';" always;
         add_header Referrer-Policy "no-referrer" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header X-Frame-Options "DENY" always;
@@ -50,17 +80,18 @@ server {
 
     # 2. Vmail Transactional Mail API & Tracking
     location ^~ /vmail-api/ {
-        proxy_pass http://127.0.0.1:8096/vmail-api/;
+        proxy_pass http://vmail_admin_upstream/vmail-api/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_http_version 1.1;
+        proxy_set_header Connection "";
     }
 
     # 3. Vmail Core Protocols & JMAP Endpoints
     location ^~ /jmap {
-        proxy_pass http://127.0.0.1:8090;
+        proxy_pass http://vmail_core_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -71,11 +102,13 @@ server {
     }
 
     location ^~ /.well-known/ {
-        proxy_pass http://127.0.0.1:8090/.well-known/;
+        proxy_pass http://vmail_core_upstream/.well-known/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
     }
 
     # 4. Cloudflare Email Routing Inbound Webhook Bridge
@@ -86,7 +119,15 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
         proxy_read_timeout 60s;
+    }
+
+    # Prevent nonexistent skin paths from falling back to unstyled index.php
+    location ^~ /skins/ {
+        expires 30d;
+        add_header Cache-Control "public, max-age=2592000, no-transform";
+        try_files $uri =404;
     }
 
     # 5. Gmail-style Webmail Root (Roundcube)
@@ -103,6 +144,8 @@ server {
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
         fastcgi_param PATH_INFO $fastcgi_path_info;
         fastcgi_param HTTPS $vmail_https;
+        fastcgi_buffers 16 16k;
+        fastcgi_buffer_size 32k;
         fastcgi_connect_timeout 60;
         fastcgi_send_timeout 180;
         fastcgi_read_timeout 180;
@@ -110,7 +153,7 @@ server {
 
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|webp|woff|woff2|ttf|eot)$ {
         expires 30d;
-        add_header Cache-Control "public, no-transform";
+        add_header Cache-Control "public, max-age=2592000, no-transform";
         try_files $uri =404;
     }
 

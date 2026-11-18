@@ -6,7 +6,11 @@
   <base href="/admin/" />
   <title>Vmail Admin Console</title>
   <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
-  <link rel="stylesheet" href="./app.css?v=20261112r4" />
+  <link rel="preload" href="./app.css?v=20261118" as="style" />
+  <link rel="preload" href="./app.js?v=20261118" as="script" />
+  <link rel="prefetch" href="/" />
+  <link rel="stylesheet" href="./app.css?v=20261118" />
+  <script type="speculationrules">{"prefetch":[{"source":"list","urls":["/"]}]}</script>
 </head>
 <body>
   <div id="login-screen" class="login-wrap hidden">
@@ -91,6 +95,6 @@
   </div>
 
   <div id="toast-wrap" class="toast-wrap"></div>
-  <script src="./app.js?v=20261112r4"></script>
+  <script src="./app.js?v=20261118" defer></script>
 </body>
 </html>

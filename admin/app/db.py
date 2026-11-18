@@ -14,6 +14,7 @@ DB_PATH = os.path.join(DATA_DIR, "vmail.db")
 SECRET_PATH = os.path.join(ETC_DIR, "secret.key")
 
 _LOCK = threading.Lock()
+_SECRET_CACHE = None
 
 
 def ensure_dirs():
@@ -22,11 +23,15 @@ def ensure_dirs():
 
 
 def get_master_secret() -> bytes:
+    global _SECRET_CACHE
+    if _SECRET_CACHE is not None and os.path.exists(SECRET_PATH):
+        return _SECRET_CACHE
     ensure_dirs()
     with _LOCK:
         if os.path.exists(SECRET_PATH):
             raw = open(SECRET_PATH, "rb").read().strip()
             if len(raw) >= 32:
+                _SECRET_CACHE = raw
                 return raw
         key = secrets.token_hex(32).encode("ascii")
         tmp_path = f"{SECRET_PATH}.tmp.{os.getpid()}.{threading.get_ident()}"
@@ -46,7 +51,8 @@ def get_master_secret() -> bytes:
                 os.unlink(tmp_path)
             except OSError:
                 pass
-        return open(SECRET_PATH, "rb").read().strip()
+        _SECRET_CACHE = open(SECRET_PATH, "rb").read().strip()
+        return _SECRET_CACHE
 
 
 def encrypt_secret(plaintext: str) -> str:
@@ -88,6 +94,12 @@ def get_conn() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
+    try:
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        conn.execute("PRAGMA cache_size=-16000;")
+        conn.execute("PRAGMA mmap_size=67108864;")
+    except sqlite3.Error:
+        pass
     return conn
 
 
@@ -217,6 +229,10 @@ def init_db():
                 k TEXT PRIMARY KEY,
                 v TEXT NOT NULL
             );
+
+            CREATE INDEX IF NOT EXISTS idx_send_logs_created ON send_logs(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_contacts_list_status ON contacts(list_id, status);
+            CREATE INDEX IF NOT EXISTS idx_campaign_items_camp_status ON campaign_items(campaign_id, status);
             """
         )
 

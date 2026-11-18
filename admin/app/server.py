@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
 import datetime
+import gzip
 import hashlib
 import hmac
 import html
@@ -34,8 +36,62 @@ MAX_SESSIONS = 500
 _SESSIONS = {}
 _FAILED_LOGINS = {}
 _SESS_LOCK = threading.Lock()
+_STATIC_CACHE = {}
+_STATIC_LOCK = threading.Lock()
+_API_CACHE = {}
+_API_CACHE_LOCK = threading.Lock()
+_API_CACHE_TTL = 3.0
+_OVERVIEW_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="vmail-ov")
 _EMAIL_RE = re.compile(r"^[^@\s\r\n<>\"'\\]+@[^@\s\r\n<>\"'\\]+\.[a-zA-Z0-9-]{2,}$")
 _DOMAIN_RE = re.compile(r"^(?=.{3,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+
+
+def _api_cache_get(key: str):
+    now = time.monotonic()
+    with _API_CACHE_LOCK:
+        entry = _API_CACHE.get(key)
+        if entry and entry[0] > now:
+            return entry[1]
+    return None
+
+
+def _api_cache_set(key: str, val: dict, ttl: float = _API_CACHE_TTL):
+    with _API_CACHE_LOCK:
+        if len(_API_CACHE) > 64:
+            _API_CACHE.clear()
+        _API_CACHE[key] = (time.monotonic() + ttl, val)
+
+
+def _invalidate_api_cache():
+    with _API_CACHE_LOCK:
+        _API_CACHE.clear()
+
+
+def _load_static_cached(fpath: str):
+    st = os.stat(fpath)
+    sig = (st.st_mtime_ns, st.st_size)
+    with _STATIC_LOCK:
+        cached = _STATIC_CACHE.get(fpath)
+        if cached and cached["sig"] == sig:
+            return cached
+    with open(fpath, "rb") as f:
+        raw = f.read()
+    ctype, _ = mimetypes.guess_type(fpath)
+    if fpath.endswith(".svg"):
+        ctype = "image/svg+xml"
+    elif fpath.endswith(".js"):
+        ctype = "application/javascript; charset=utf-8"
+    elif fpath.endswith(".css"):
+        ctype = "text/css; charset=utf-8"
+    elif fpath.endswith(".html"):
+        ctype = "text/html; charset=utf-8"
+    etag = '"' + hashlib.sha256(raw).hexdigest()[:16] + '"'
+    compressible = any(fpath.endswith(ext) for ext in (".html", ".css", ".js", ".svg", ".json", ".txt"))
+    gz = gzip.compress(raw, compresslevel=6) if (compressible and len(raw) >= 256) else None
+    entry = {"sig": sig, "raw": raw, "gz": gz, "etag": etag, "ctype": ctype or "application/octet-stream"}
+    with _STATIC_LOCK:
+        _STATIC_CACHE[fpath] = entry
+    return entry
 
 TRANSPARENT_GIF = (
     b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!"
@@ -129,30 +185,42 @@ class VmailHandler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
 
+    def _accepts_gzip(self) -> bool:
+        ae = (self.headers.get("Accept-Encoding") or "").lower()
+        return "gzip" in ae
+
     def _send_json(self, code: int, obj: dict, extra_headers=None):
-        raw = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        raw = json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        use_gz = len(raw) >= 512 and self._accepts_gzip()
+        payload = gzip.compress(raw, compresslevel=5) if use_gz else raw
         try:
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Content-Length", str(len(payload)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Vary", "Accept-Encoding")
+            if use_gz:
+                self.send_header("Content-Encoding", "gzip")
             self._send_common_security_headers()
             if extra_headers:
                 for k, v in extra_headers.items():
                     self.send_header(k, v)
             self.end_headers()
             if not getattr(self, "_head_only", False):
-                self.wfile.write(raw)
+                self.wfile.write(payload)
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
 
-    def _send_bytes(self, code: int, ctype: str, data: bytes, cache: str = "no-cache"):
+    def _send_bytes(self, code: int, ctype: str, data: bytes, cache: str = "no-cache", extra_headers=None):
         try:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", cache)
             self._send_common_security_headers()
+            if extra_headers:
+                for k, v in extra_headers.items():
+                    self.send_header(k, v)
             self.end_headers()
             if not getattr(self, "_head_only", False):
                 self.wfile.write(data)
@@ -215,7 +283,7 @@ class VmailHandler(BaseHTTPRequestHandler):
 
         # Public tracking / health endpoints
         if path == "/vmail-api/v1/health":
-            return self._send_json(200, {"ok": True, "service": "Vmail", "version": "1.1.0"})
+            return self._send_json(200, {"ok": True, "service": "Vmail", "version": "1.2.0"})
 
         if path == "/vmail-api/v1/track/open":
             tok = (qs.get("t") or [""])[0].strip()
@@ -258,7 +326,7 @@ class VmailHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send_json(500, {"ok": False, "error": str(e)})
 
-        # Static Frontend under WEB_DIR (realpath + commonpath traversal protection)
+        # Static Frontend under WEB_DIR (in-memory cached, gzip, ETag 304, Early Hints)
         rel = "index.html" if path in ("/", "") else path.lstrip("/")
         candidate = os.path.realpath(os.path.join(WEB_DIR, rel))
         try:
@@ -266,13 +334,25 @@ class VmailHandler(BaseHTTPRequestHandler):
         except ValueError:
             in_web = False
         safe_path = candidate if (in_web and os.path.isfile(candidate)) else os.path.join(WEB_DIR, "index.html")
-        ctype, _ = mimetypes.guess_type(safe_path)
-        if safe_path.endswith(".svg"):
-            ctype = "image/svg+xml"
-        with open(safe_path, "rb") as f:
-            data = f.read()
-        cache = "no-cache" if safe_path.endswith(".html") else "public, max-age=3600"
-        return self._send_bytes(200, ctype or "application/octet-stream", data, cache)
+        asset = _load_static_cached(safe_path)
+        extra = {"ETag": asset["etag"], "Vary": "Accept-Encoding"}
+        is_html = safe_path.endswith(".html")
+        if is_html:
+            extra["Link"] = "</admin/app.css?v=20261118>; rel=preload; as=style, </admin/app.js?v=20261118>; rel=preload; as=script"
+            cache = "no-cache"
+        elif "v" in qs:
+            cache = "public, max-age=31536000, immutable"
+        else:
+            cache = "public, max-age=86400"
+
+        inm = (self.headers.get("If-None-Match") or "").strip()
+        if inm and inm == asset["etag"]:
+            return self._send_bytes(304, asset["ctype"], b"", cache, extra_headers=extra)
+
+        if asset["gz"] is not None and self._accepts_gzip():
+            extra["Content-Encoding"] = "gzip"
+            return self._send_bytes(200, asset["ctype"], asset["gz"], cache, extra_headers=extra)
+        return self._send_bytes(200, asset["ctype"], asset["raw"], cache, extra_headers=extra)
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -299,6 +379,7 @@ class VmailHandler(BaseHTTPRequestHandler):
             if not sess:
                 return
             try:
+                _invalidate_api_cache()
                 return self._handle_api_post(path, sess)
             except Exception as e:
                 return self._send_json(400, {"ok": False, "error": str(e)})
@@ -315,6 +396,7 @@ class VmailHandler(BaseHTTPRequestHandler):
             if not sess:
                 return
             try:
+                _invalidate_api_cache()
                 return self._handle_api_patch(path, sess)
             except Exception as e:
                 return self._send_json(400, {"ok": False, "error": str(e)})
@@ -330,6 +412,7 @@ class VmailHandler(BaseHTTPRequestHandler):
             if not sess:
                 return
             try:
+                _invalidate_api_cache()
                 return self._handle_api_delete(path, sess)
             except Exception as e:
                 return self._send_json(400, {"ok": False, "error": str(e)})
@@ -470,23 +553,26 @@ class VmailHandler(BaseHTTPRequestHandler):
 
     def _handle_api_get(self, path: str, qs: dict, sess: dict):
         if path == "/api/overview":
-            domains = jmap_client.list_domains()
-            accounts = jmap_client.list_accounts()
-            routes, strat = jmap_client.get_relays_and_strategy()
-            queue = jmap_client.list_queue()
-            logs = log_parser.parse_logs(limit=40)
-            health = log_parser.get_system_health()
-            default_route = ((strat.get("route") or {}).get("else") or "").strip("'")
+            cached = _api_cache_get("overview")
+            if cached is not None:
+                return self._send_json(200, cached)
+            fut_bundle = _OVERVIEW_POOL.submit(jmap_client.get_overview_bundle)
+            fut_logs = _OVERVIEW_POOL.submit(log_parser.parse_logs, 40)
+            fut_health = _OVERVIEW_POOL.submit(log_parser.get_system_health)
             with db.session(commit=False) as conn:
                 camp_count = conn.execute("SELECT COUNT(*) FROM campaigns").fetchone()[0]
                 contact_count = conn.execute("SELECT COUNT(*) FROM contacts WHERE status='subscribed'").fetchone()[0]
                 apikey_count = conn.execute("SELECT COUNT(*) FROM api_keys WHERE enabled=1").fetchone()[0]
-            return self._send_json(200, {
+            bundle = fut_bundle.result()
+            logs = fut_logs.result()
+            health = fut_health.result()
+            default_route = ((bundle["strategy"].get("route") or {}).get("else") or "").strip("'")
+            payload = {
                 "ok": True,
                 "stats": {
-                    "domains": len(domains),
-                    "accounts": len(accounts),
-                    "queue": len(queue),
+                    "domains": len(bundle["domains"]),
+                    "accounts": len(bundle["accounts"]),
+                    "queue": len(bundle["queue"]),
                     "campaigns": camp_count,
                     "contacts": contact_count,
                     "api_keys": apikey_count,
@@ -497,9 +583,14 @@ class VmailHandler(BaseHTTPRequestHandler):
                 },
                 "health": health,
                 "recent_events": logs["events"][:15],
-            })
+            }
+            _api_cache_set("overview", payload, ttl=3.0)
+            return self._send_json(200, payload)
 
         if path == "/api/domains":
+            cached = _api_cache_get("domains")
+            if cached is not None:
+                return self._send_json(200, cached)
             domains = jmap_client.list_domains()
             out = []
             for d in domains:
@@ -511,11 +602,20 @@ class VmailHandler(BaseHTTPRequestHandler):
                     "createdAt": d.get("createdAt"),
                     "dnsZoneFile": d.get("dnsZoneFile") or "",
                 })
-            return self._send_json(200, {"ok": True, "domains": out})
+            payload = {"ok": True, "domains": out}
+            _api_cache_set("domains", payload, ttl=3.0)
+            return self._send_json(200, payload)
 
         if path == "/api/accounts":
-            accts = jmap_client.list_accounts()
-            domains = {d["id"]: d["name"] for d in jmap_client.list_domains()}
+            cached = _api_cache_get("accounts")
+            if cached is not None:
+                return self._send_json(200, cached)
+            res = jmap_client.jmap_call([
+                ["x:Account/get", {"accountId": "0", "ids": None}, "a"],
+                ["x:Domain/get", {"accountId": "0", "ids": None}, "d"],
+            ])
+            accts = res[0][1].get("list", [])
+            domains = {d["id"]: d["name"] for d in res[1][1].get("list", [])}
             out = []
             for a in accts:
                 aliases_raw = a.get("aliases") or {}
@@ -539,12 +639,19 @@ class VmailHandler(BaseHTTPRequestHandler):
                     "aliases": aliases,
                     "createdAt": a.get("createdAt"),
                 })
-            return self._send_json(200, {"ok": True, "accounts": out})
+            payload = {"ok": True, "accounts": out}
+            _api_cache_set("accounts", payload, ttl=3.0)
+            return self._send_json(200, payload)
 
         if path == "/api/relays":
+            cached = _api_cache_get("relays")
+            if cached is not None:
+                return self._send_json(200, cached)
             routes, strat = jmap_client.get_relays_and_strategy()
             default_route = ((strat.get("route") or {}).get("else") or "").strip("'")
-            return self._send_json(200, {"ok": True, "routes": routes, "default_route": default_route})
+            payload = {"ok": True, "routes": routes, "default_route": default_route}
+            _api_cache_set("relays", payload, ttl=3.0)
+            return self._send_json(200, payload)
 
         if path == "/api/apikeys":
             with db.session(commit=False) as conn:

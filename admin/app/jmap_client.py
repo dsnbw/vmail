@@ -1,15 +1,79 @@
 import base64
+import http.client
 import json
 import os
+import ssl
 import threading
 import urllib.error
-import urllib.request
+import urllib.parse
 
 VMAIL_CORE_URL = os.environ.get("VMAIL_CORE_URL", "http://127.0.0.1:8090")
 ENGINE_CFG = os.environ.get("VMAIL_ENGINE_CFG", "/etc/vmail/engine.json")
 
 _CAP_CACHE = None
 _LOCK = threading.Lock()
+_TLS = threading.local()
+
+
+def _get_conn(base_url: str, timeout: float = 15.0):
+    parsed = urllib.parse.urlparse(base_url)
+    scheme = (parsed.scheme or "http").lower()
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or (443 if scheme == "https" else 80)
+    key = (scheme, host, port)
+    conn = getattr(_TLS, "conn", None)
+    if conn is not None and getattr(_TLS, "conn_key", None) == key:
+        return conn, parsed.path.rstrip("/")
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    if scheme == "https":
+        ctx = ssl._create_unverified_context()
+        conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=ctx)
+    else:
+        conn = http.client.HTTPConnection(host, port, timeout=timeout)
+    _TLS.conn = conn
+    _TLS.conn_key = key
+    return conn, parsed.path.rstrip("/")
+
+
+def _reset_conn():
+    conn = getattr(_TLS, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    _TLS.conn = None
+    _TLS.conn_key = None
+
+
+def _http_json(method: str, path: str, headers: dict, body: bytes = None, timeout: float = 15.0):
+    req_headers = {"Connection": "keep-alive", **headers}
+    last_err = None
+    for attempt in range(2):
+        conn, prefix = _get_conn(VMAIL_CORE_URL, timeout=timeout)
+        try:
+            conn.timeout = timeout
+            conn.request(method, f"{prefix}{path}", body=body, headers=req_headers)
+            resp = conn.getresponse()
+            raw = resp.read()
+            if resp.status >= 400:
+                raise urllib.error.HTTPError(
+                    f"{VMAIL_CORE_URL}{path}", resp.status, resp.reason, resp.headers, None
+                )
+            return json.loads(raw.decode("utf-8"))
+        except urllib.error.HTTPError:
+            raise
+        except (http.client.HTTPException, OSError, BrokenPipeError, ConnectionResetError) as e:
+            last_err = e
+            _reset_conn()
+            if attempt == 0:
+                continue
+            raise
+    raise last_err
 
 
 def _load_engine_creds():
@@ -43,12 +107,7 @@ def _basic_header(user: str, password: str) -> str:
 def get_session(user: str = None, password: str = None):
     if user is None or password is None:
         user, password = _load_engine_creds()
-    req = urllib.request.Request(
-        f"{VMAIL_CORE_URL}/jmap/session",
-        headers={"Authorization": _basic_header(user, password)},
-    )
-    with urllib.request.urlopen(req, timeout=8) as r:
-        return json.loads(r.read().decode("utf-8"))
+    return _http_json("GET", "/jmap/session", {"Authorization": _basic_header(user, password)}, timeout=8.0)
 
 
 def _get_caps(auth_header: str):
@@ -58,9 +117,7 @@ def _get_caps(auth_header: str):
     with _LOCK:
         if _CAP_CACHE:
             return _CAP_CACHE
-        req = urllib.request.Request(f"{VMAIL_CORE_URL}/jmap/session", headers={"Authorization": auth_header})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            sess = json.loads(r.read().decode("utf-8"))
+        sess = _http_json("GET", "/jmap/session", {"Authorization": auth_header}, timeout=8.0)
         _CAP_CACHE = list(sess.get("capabilities", {}).keys())
         return _CAP_CACHE
 
@@ -71,14 +128,33 @@ def jmap_call(calls: list, user: str = None, password: str = None):
     auth = _basic_header(user, password)
     caps = _get_caps(auth)
     payload = json.dumps({"using": caps, "methodCalls": calls}).encode("utf-8")
-    req = urllib.request.Request(
-        f"{VMAIL_CORE_URL}/jmap",
-        data=payload,
-        headers={"Authorization": auth, "Content-Type": "application/json"},
+    res = _http_json(
+        "POST",
+        "/jmap",
+        {"Authorization": auth, "Content-Type": "application/json"},
+        body=payload,
+        timeout=15.0,
     )
-    with urllib.request.urlopen(req, timeout=15) as r:
-        res = json.loads(r.read().decode("utf-8"))
     return res.get("methodResponses", [])
+
+
+def get_overview_bundle():
+    """Fetch domains, accounts, routes, outbound strategy, and queue in ONE JMAP round-trip."""
+    res = jmap_call([
+        ["x:Domain/get", {"accountId": "0", "ids": None}, "d"],
+        ["x:Account/get", {"accountId": "0", "ids": None}, "a"],
+        ["x:MtaRoute/get", {"accountId": "0", "ids": None}, "r"],
+        ["x:MtaOutboundStrategy/get", {"accountId": "0", "ids": ["singleton"]}, "s"],
+        ["x:QueuedMessage/get", {"accountId": "0", "ids": None}, "q"],
+    ])
+    by_tag = {item[2]: item[1] for item in res if len(item) >= 3 and isinstance(item[1], dict)}
+    return {
+        "domains": by_tag.get("d", {}).get("list", []),
+        "accounts": by_tag.get("a", {}).get("list", []),
+        "routes": by_tag.get("r", {}).get("list", []),
+        "strategy": (by_tag.get("s", {}).get("list") or [{}])[0],
+        "queue": by_tag.get("q", {}).get("list", []),
+    }
 
 
 def verify_admin_login(username: str, password: str):

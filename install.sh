@@ -3,12 +3,19 @@ set -euo pipefail
 
 # ==============================================================================
 # Vmail Mail Server & Gmail-Style Webmail — Universal Self-Healing Installer
-# Lightweight, high-speed, zero-license, multi-domain, multi-OS, Cloudflare-ready
-# OS Supported: Ubuntu, Debian, Rocky, AlmaLinux, RHEL, CentOS, Fedora,
-#               Amazon Linux, Alpine Linux, Arch Linux (VPS / LXC / Container / PRoot)
+# Version: 1.2.0
+# Lightweight, high-speed (OPcache JIT + Keepalive + Gzip Static + HTTP/2/3),
+# zero-license, multi-domain, multi-OS, Cloudflare-ready.
+# OS Supported: Ubuntu, Debian, Armbian, Rocky, AlmaLinux, RHEL, CentOS, Fedora,
+#               Amazon Linux, openSUSE/SLES, Alpine Linux, Arch Linux
+#               (Bare-metal, VPS, LXC, Docker, PRoot)
+#
+# Quick 1-line install:
+#   curl -fsSL https://raw.githubusercontent.com/dsnbw/vmail/main/install.sh | sudo bash -s -- --domain example.com
 # ==============================================================================
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VMAIL_VERSION="${VMAIL_VERSION:-v1.2.0}"
+VMAIL_REPO="${VMAIL_REPO:-dsnbw/vmail}"
 ROUNDCUBE_VERSION="${VMAIL_ROUNDCUBE_VERSION:-1.6.10}"
 WEBMAIL_ROOT="/var/www/vmail-webmail"
 WEBMAIL_DB_DIR="/var/lib/vmail-webmail"
@@ -33,7 +40,7 @@ NON_INTERACTIVE="0"
 
 usage() {
   cat <<'EOF'
-Vmail Universal Installer Options:
+Vmail Universal Self-Healing Installer (v1.2.0):
   --domain <domain>           Primary domain (e.g. example.com)
   --mail-host <hostname>      Webmail/MX hostname (default: mail.<domain>)
   --admin-email <email>       Admin mailbox (default: admin@<domain>)
@@ -82,26 +89,60 @@ log()  { printf '\033[1;34m[Vmail]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[WARN]\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m[OK]\033[0m %s\n' "$*"; }
 
-# Interactive prompts when missing
-if [ "$NON_INTERACTIVE" != "1" ]; then
+# Robust resilient download helper (retries + automatic IPv4 fallback)
+fetch_with_retry() {
+  local url="$1"
+  local dest="$2"
+  local attempt
+  for attempt in 1 2 3; do
+    if curl -fsSL --connect-timeout 15 --max-time 300 "$url" -o "$dest" 2>/dev/null; then
+      return 0
+    fi
+    if curl -4 -fsSL --connect-timeout 15 --max-time 300 "$url" -o "$dest" 2>/dev/null; then
+      return 0
+    fi
+    warn "Download attempt ${attempt} failed for ${url}, retrying in $((attempt * 2))s..."
+    sleep $((attempt * 2))
+  done
+  return 1
+}
+
+# Detect local repo vs standalone piped execution (curl | sudo bash)
+SCRIPT_PATH="${BASH_SOURCE[0]:-}"
+REPO_DIR=""
+TMP_BUNDLE_DIR=""
+cleanup_tmp() {
+  [ -n "${TMP_BUNDLE_DIR:-}" ] && rm -rf "$TMP_BUNDLE_DIR" 2>/dev/null || true
+}
+trap cleanup_tmp EXIT
+
+if [ -n "$SCRIPT_PATH" ] && [ -f "$SCRIPT_PATH" ]; then
+  CAND_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+  if [ -f "$CAND_DIR/admin/app/server.py" ] && [ -f "$CAND_DIR/core/install-core.sh" ]; then
+    REPO_DIR="$CAND_DIR"
+  fi
+fi
+
+# Interactive prompts when missing (reads from /dev/tty when piped!)
+if [ "$NON_INTERACTIVE" != "1" ] && [ -r /dev/tty ]; then
   if [ -z "$PRIMARY_DOMAIN" ]; then
-    read -rp "Primary Mail Domain (e.g. example.com): " PRIMARY_DOMAIN
+    read -rp "Primary Mail Domain (e.g. example.com): " PRIMARY_DOMAIN </dev/tty
   fi
   if [ -z "$MAIL_HOST" ] && [ -n "$PRIMARY_DOMAIN" ]; then
-    read -rp "Webmail Hostname [mail.${PRIMARY_DOMAIN}]: " MAIL_HOST
+    read -rp "Webmail Hostname [mail.${PRIMARY_DOMAIN}]: " MAIL_HOST </dev/tty
   fi
   if [ -z "$ADMIN_EMAIL" ] && [ -n "$PRIMARY_DOMAIN" ]; then
-    read -rp "Admin Email [admin@${PRIMARY_DOMAIN}]: " ADMIN_EMAIL
+    read -rp "Admin Email [admin@${PRIMARY_DOMAIN}]: " ADMIN_EMAIL </dev/tty
   fi
   if [ -z "$ADMIN_PASS" ]; then
-    read -rsp "Admin Password (Enter to auto-generate): " ADMIN_PASS
-    echo
+    read -rsp "Admin Password (Enter to auto-generate): " ADMIN_PASS </dev/tty
+    echo >/dev/tty
   fi
   if [ -z "$CF_EMAIL" ]; then
-    read -rp "Cloudflare Account Email (Enter to skip now): " CF_EMAIL
+    read -rp "Cloudflare Account Email (Enter to skip now): " CF_EMAIL </dev/tty
     if [ -n "$CF_EMAIL" ] && [ -z "$CF_KEY" ]; then
-      read -rsp "Cloudflare Global API Key: " CF_KEY
-      echo
+      read -rsp "Cloudflare Global API Key: " CF_KEY </dev/tty
+      echo >/dev/tty
     fi
   fi
 fi
@@ -132,22 +173,19 @@ fi
 OS_FAMILY="unknown"
 PKG_MGR=""
 if command -v apt-get >/dev/null 2>&1; then
-  PKG_MGR="apt"
-  OS_FAMILY="debian"
+  PKG_MGR="apt"; OS_FAMILY="debian"
 elif command -v dnf >/dev/null 2>&1; then
-  PKG_MGR="dnf"
-  OS_FAMILY="rhel"
+  PKG_MGR="dnf"; OS_FAMILY="rhel"
 elif command -v yum >/dev/null 2>&1; then
-  PKG_MGR="yum"
-  OS_FAMILY="rhel"
+  PKG_MGR="yum"; OS_FAMILY="rhel"
+elif command -v zypper >/dev/null 2>&1; then
+  PKG_MGR="zypper"; OS_FAMILY="suse"
 elif command -v apk >/dev/null 2>&1; then
-  PKG_MGR="apk"
-  OS_FAMILY="alpine"
+  PKG_MGR="apk"; OS_FAMILY="alpine"
 elif command -v pacman >/dev/null 2>&1; then
-  PKG_MGR="pacman"
-  OS_FAMILY="arch"
+  PKG_MGR="pacman"; OS_FAMILY="arch"
 else
-  echo "[ERROR] No supported package manager found (apt, dnf, yum, apk, pacman)." >&2
+  echo "[ERROR] No supported package manager found (apt, dnf, yum, zypper, apk, pacman)." >&2
   exit 1
 fi
 
@@ -158,31 +196,58 @@ elif command -v rc-service >/dev/null 2>&1 && [ -d /run/openrc ]; then
   INIT_SYS="openrc"
 fi
 
-log "Detected OS family: ${OS_FAMILY} (${PKG_MGR}) | Init: ${INIT_SYS}"
+log "Detected OS: ${OS_FAMILY} (${PKG_MGR}) | Init: ${INIT_SYS} | Arch: $(uname -m)"
 
-# Install cross-distro system dependencies with automatic fallbacks
+# Self-healing cross-distro dependency installer
 install_packages() {
   case "$PKG_MGR" in
     apt)
       export DEBIAN_FRONTEND=noninteractive
-      apt-get update -qq
-      apt-get install -y -qq curl wget tar gzip unzip openssl python3 nginx \
-        php-fpm php-xml php-mbstring php-intl php-zip php-gd php-curl php-sqlite3 >/dev/null
+      # Wait out concurrent apt/dpkg locks if present
+      for _ in $(seq 1 20); do
+        if ! fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock >/dev/null 2>&1; then
+          break
+        fi
+        warn "Waiting for another apt/dpkg process to finish..."
+        sleep 3
+      done
+      dpkg --configure -a >/dev/null 2>&1 || true
+      apt-get update -qq || { warn "apt-get update retried with --allow-releaseinfo-change"; apt-get update --allow-releaseinfo-change -qq || true; }
+      if ! apt-get install -y -qq curl wget tar gzip unzip openssl python3 nginx \
+        php-fpm php-xml php-mbstring php-intl php-zip php-gd php-curl php-sqlite3 >/dev/null 2>&1; then
+        warn "Initial apt install hit an issue — running self-healing dpkg/apt recovery..."
+        dpkg --configure -a >/dev/null 2>&1 || true
+        apt-get -f install -y -qq >/dev/null 2>&1 || true
+        apt-get install -y --fix-missing curl wget tar gzip unzip openssl python3 nginx \
+          php-fpm php-xml php-mbstring php-intl php-zip php-gd php-curl php-sqlite3
+      fi
       apt-get install -y -qq mariadb-server php-mysql >/dev/null 2>&1 || true
       apt-get install -y -qq php-imagick >/dev/null 2>&1 || true
       ;;
     dnf|yum)
       "$PKG_MGR" install -y -q epel-release >/dev/null 2>&1 || true
-      "$PKG_MGR" install -y -q curl wget tar gzip unzip openssl python3 nginx \
-        php-fpm php-xml php-mbstring php-intl php-zip php-gd php-json php-pdo >/dev/null
+      if ! "$PKG_MGR" install -y -q curl wget tar gzip unzip openssl python3 nginx \
+        php-fpm php-xml php-mbstring php-intl php-zip php-gd php-json php-pdo >/dev/null 2>&1; then
+        warn "Retrying ${PKG_MGR} without optional php-json (built into PHP 8+)..."
+        "$PKG_MGR" install -y curl wget tar gzip unzip openssl python3 nginx \
+          php-fpm php-xml php-mbstring php-intl php-zip php-gd php-pdo php-opcache
+      fi
+      "$PKG_MGR" install -y -q php-opcache >/dev/null 2>&1 || true
       "$PKG_MGR" install -y -q mariadb-server php-mysqlnd >/dev/null 2>&1 || true
-      "$PKG_MGR" install -y -q php-pecl-imagick >/dev/null 2>&1 || true
+      ;;
+    zypper)
+      zypper --non-interactive refresh >/dev/null 2>&1 || true
+      zypper --non-interactive install -y curl wget tar gzip unzip openssl python3 nginx \
+        php8 php8-fpm php8-xmlreader php8-xmlwriter php8-dom php8-mbstring php8-intl \
+        php8-zip php8-gd php8-curl php8-pdo php8-sqlite php8-opcache >/dev/null 2>&1 || \
+      zypper --non-interactive install -y curl wget tar gzip unzip openssl python3 nginx \
+        php php-fpm php-xml php-mbstring php-intl php-zip php-gd php-curl php-pdo php-sqlite
+      zypper --non-interactive install -y mariadb php8-mysql >/dev/null 2>&1 || true
       ;;
     apk)
       apk update >/dev/null
-      # Detect available php stream (php83, php82, php84, php81)
       PHP_VER=""
-      for cand in php83 php84 php82 php81; do
+      for cand in php85 php84 php83 php82 php81; do
         if apk search -x "$cand" >/dev/null 2>&1 && apk search -q -e "$cand" | grep -qx "$cand"; then
           PHP_VER="$cand"
           break
@@ -192,7 +257,7 @@ install_packages() {
       apk add --no-cache curl wget tar gzip unzip openssl python3 nginx sqlite \
         "$PHP_VER" "${PHP_VER}-fpm" "${PHP_VER}-xml" "${PHP_VER}-dom" "${PHP_VER}-mbstring" \
         "${PHP_VER}-intl" "${PHP_VER}-zip" "${PHP_VER}-gd" "${PHP_VER}-curl" \
-        "${PHP_VER}-session" "${PHP_VER}-iconv" "${PHP_VER}-openssl" \
+        "${PHP_VER}-session" "${PHP_VER}-iconv" "${PHP_VER}-openssl" "${PHP_VER}-opcache" \
         "${PHP_VER}-pdo_sqlite" "${PHP_VER}-sqlite3" >/dev/null
       apk add --no-cache mariadb mariadb-client "${PHP_VER}-pdo_mysql" "${PHP_VER}-mysqli" >/dev/null 2>&1 || true
       ln -sf "/usr/bin/${PHP_VER}" /usr/bin/php 2>/dev/null || true
@@ -202,7 +267,7 @@ install_packages() {
         php php-fpm php-intl php-gd php-sqlite >/dev/null
       pacman -S --noconfirm --needed mariadb >/dev/null 2>&1 || true
       if [ -f /etc/php/php.ini ]; then
-        sed -i 's/^;\(extension=pdo_mysql\)/\1/; s/^;\(extension=pdo_sqlite\)/\1/; s/^;\(extension=sqlite3\)/\1/; s/^;\(extension=intl\)/\1/; s/^;\(extension=iconv\)/\1/; s/^;\(extension=gd\)/\1/' /etc/php/php.ini || true
+        sed -i 's/^;\(extension=pdo_mysql\)/\1/; s/^;\(extension=pdo_sqlite\)/\1/; s/^;\(extension=sqlite3\)/\1/; s/^;\(extension=intl\)/\1/; s/^;\(extension=iconv\)/\1/; s/^;\(extension=gd\)/\1/; s/^;\(zend_extension=opcache\)/\1/' /etc/php/php.ini || true
       fi
       ;;
   esac
@@ -211,10 +276,39 @@ install_packages() {
 log "Installing system dependencies..."
 install_packages
 
-mkdir -p "$ADMIN_DIR/app" "$ADMIN_DIR/web" "$ADMIN_DIR/data" "$CFG_DIR" "$LOG_DIR" "$WEBMAIL_ROOT" "$WEBMAIL_DB_DIR"
+# If executed via `curl ... | bash`, download official Vmail release bundle now (after curl/tar exist!)
+if [ -z "$REPO_DIR" ]; then
+  TMP_BUNDLE_DIR="$(mktemp -d)"
+  log "Downloading Vmail ${VMAIL_VERSION} bundle from github.com/${VMAIL_REPO}..."
+  REL_TAR="https://github.com/${VMAIL_REPO}/releases/download/${VMAIL_VERSION}/vmail-${VMAIL_VERSION}.tar.gz"
+  MAIN_TAR="https://github.com/${VMAIL_REPO}/archive/refs/heads/main.tar.gz"
+  if fetch_with_retry "$REL_TAR" "$TMP_BUNDLE_DIR/vmail.tar.gz"; then
+    if fetch_with_retry "https://github.com/${VMAIL_REPO}/releases/download/${VMAIL_VERSION}/SHA256SUMS.txt" "$TMP_BUNDLE_DIR/SHA256SUMS.txt" 2>/dev/null; then
+      EXP="$(grep -F "  vmail-${VMAIL_VERSION}.tar.gz" "$TMP_BUNDLE_DIR/SHA256SUMS.txt" | awk '{print $1}' || true)"
+      if [ -n "$EXP" ] && command -v sha256sum >/dev/null 2>&1; then
+        ACT="$(sha256sum "$TMP_BUNDLE_DIR/vmail.tar.gz" | awk '{print $1}')"
+        [ "$EXP" = "$ACT" ] || { echo "[ERROR] Vmail bundle SHA256 mismatch!" >&2; exit 1; }
+        ok "Vmail bundle SHA256 verified."
+      fi
+    fi
+  else
+    warn "Release tarball unavailable, falling back to latest main branch archive..."
+    fetch_with_retry "$MAIN_TAR" "$TMP_BUNDLE_DIR/vmail.tar.gz"
+  fi
+  tar -xzf "$TMP_BUNDLE_DIR/vmail.tar.gz" -C "$TMP_BUNDLE_DIR"
+  FOUND_SERVER="$(find "$TMP_BUNDLE_DIR" -maxdepth 4 -path '*/admin/app/server.py' | head -n 1 || true)"
+  if [ -z "$FOUND_SERVER" ]; then
+    echo "[ERROR] Failed to extract Vmail repository payload." >&2
+    exit 1
+  fi
+  REPO_DIR="$(dirname "$(dirname "$(dirname "$FOUND_SERVER")")")"
+  ok "Extracted Vmail source bundle -> ${REPO_DIR}"
+fi
+
+mkdir -p "$ADMIN_DIR/app" "$ADMIN_DIR/web" "$ADMIN_DIR/core" "$ADMIN_DIR/data" "$CFG_DIR" "$LOG_DIR" "$WEBMAIL_ROOT" "$WEBMAIL_DB_DIR"
 chmod 700 "$CFG_DIR" "$ADMIN_DIR/data"
 
-# Stop nginx temporarily if a default distro site already holds 8080/80 during core bootstrap
+# Stop nginx temporarily if default site holds port 8080/80 during core bootstrap
 if [ "$INIT_SYS" = "systemd" ]; then
   systemctl stop nginx >/dev/null 2>&1 || true
 elif [ "$INIT_SYS" = "openrc" ]; then
@@ -252,10 +346,12 @@ cat > "$CFG_DIR/config.json" <<EOF
 EOF
 chmod 600 "$CFG_DIR/config.json"
 
-# 2. Deploy Vmail Admin Panel, Inbound Bridge & CLI
+# 2. Deploy Vmail Admin Panel, Core Bootstrapper, Inbound Bridge & CLI
 log "Deploying Vmail Control Panel, Inbound Bridge & CLI..."
 cp -f "$REPO_DIR"/admin/app/*.py "$ADMIN_DIR/app/"
 cp -f "$REPO_DIR"/admin/web/* "$ADMIN_DIR/web/"
+cp -f "$REPO_DIR"/core/bootstrap-jmap.py "$ADMIN_DIR/core/bootstrap-jmap.py"
+chmod 755 "$ADMIN_DIR/core/bootstrap-jmap.py"
 install -m 755 "$REPO_DIR/bridge/mail_inbound_bridge.py" /usr/local/bin/mail_inbound_bridge.py
 install -m 755 "$REPO_DIR/cli/vmail" /usr/local/bin/vmail
 
@@ -373,7 +469,7 @@ if [ "$CORE_WAIT_OK" != "1" ]; then
   warn "Core JMAP endpoint did not respond within 45s. Check $LOG_DIR/core.out"
 fi
 
-# Parse fresh temporary bootstrap password cleanly from core stdout (stripped of ANSI codes)
+# Parse fresh temporary bootstrap password cleanly from core stdout
 BOOT_USER="admin"
 BOOT_PASS=""
 if [ -f "$LOG_DIR/core.out" ]; then
@@ -410,12 +506,12 @@ python3 "$REPO_DIR/core/bootstrap-jmap.py" \
   "${RELAY_FLAGS[@]}" || warn "Bootstrap returned warning — verify /etc/vmail/engine.json if core was previously initialized with a custom admin password."
 
 # 4. Install Roundcube + Gmail Skin & Initialize DB (MariaDB with auto SQLite fallback)
-log "Downloading Roundcube Webmail (${ROUNDCUBE_VERSION})..."
+log "Setting up Vmail Gmail-style Webmail (Roundcube ${ROUNDCUBE_VERSION})..."
 if [ ! -f "$WEBMAIL_ROOT/index.php" ]; then
   TMP_RC="$(mktemp -d)"
-  curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 300 \
+  fetch_with_retry \
     "https://github.com/roundcube/roundcubemail/releases/download/${ROUNDCUBE_VERSION}/roundcubemail-${ROUNDCUBE_VERSION}-complete.tar.gz" \
-    -o "$TMP_RC/rc.tar.gz"
+    "$TMP_RC/rc.tar.gz"
   tar -xzf "$TMP_RC/rc.tar.gz" -C "$TMP_RC"
   cp -a "$TMP_RC/roundcubemail-${ROUNDCUBE_VERSION}/." "$WEBMAIL_ROOT/"
   rm -rf "$TMP_RC"
@@ -423,6 +519,10 @@ fi
 rm -rf "$WEBMAIL_ROOT/installer"
 mkdir -p "$WEBMAIL_ROOT/skins/gmail"
 cp -a "$REPO_DIR/webmail/skins/gmail/." "$WEBMAIL_ROOT/skins/gmail/"
+
+# Pre-compress static webmail CSS/JS/SVG for zero-CPU Nginx gzip_static delivery
+log "Pre-compressing static Webmail assets (gzip_static)..."
+find "$WEBMAIL_ROOT/skins/gmail" "$WEBMAIL_ROOT/program/js" -type f \( -name '*.css' -o -name '*.js' -o -name '*.svg' \) -size +256c -exec gzip -9 -k -f {} \; 2>/dev/null || true
 
 start_mariadb_if_possible() {
   if ! command -v mysql >/dev/null 2>&1 && ! command -v mariadb >/dev/null 2>&1; then
@@ -495,17 +595,45 @@ out = tpl.replace("{{DB_DSN}}", "${DB_DSN}").replace("{{DES_KEY}}", "${DES_KEY}"
 open("${WEBMAIL_ROOT}/config/config.inc.php", "w", encoding="utf-8").write(out)
 PY
 
-# 5. Start PHP-FPM & Auto-Detect Socket + Web User across all distros
+# 5. Tune PHP 8.x OPcache + Tracing JIT + Suppress Deprecation I/O Spam
+tune_php_perf() {
+  local ini_content
+  ini_content="; Vmail 2026 High-Performance PHP Tuning
+opcache.enable=1
+opcache.memory_consumption=128
+opcache.interned_strings_buffer=16
+opcache.max_accelerated_files=10000
+opcache.revalidate_freq=60
+opcache.validate_timestamps=1
+opcache.enable_file_override=1
+opcache.jit=1255
+opcache.jit_buffer_size=64M
+realpath_cache_size=4096K
+realpath_cache_ttl=600
+error_reporting=E_ALL & ~E_DEPRECATED & ~E_NOTICE
+display_errors=Off
+"
+  for d in /etc/php/*/fpm/conf.d /etc/php.d /etc/php*/conf.d /etc/php8/conf.d; do
+    if [ -d "$d" ]; then
+      printf '%s' "$ini_content" > "${d}/99-vmail-perf.ini" 2>/dev/null || true
+    fi
+  done
+}
+
+log "Tuning PHP OPcache & Tracing JIT..."
+tune_php_perf
+
+# Start PHP-FPM & Auto-Detect Socket + Web User across all distros
 start_php_fpm() {
   if [ "$INIT_SYS" = "systemd" ]; then
-    for unit in php8.4-fpm php8.3-fpm php8.2-fpm php8.1-fpm php-fpm; do
+    for unit in php8.5-fpm php8.4-fpm php8.3-fpm php8.2-fpm php8.1-fpm php8.0-fpm php-fpm; do
       if systemctl list-unit-files "${unit}.service" >/dev/null 2>&1; then
         systemctl enable "$unit" >/dev/null 2>&1 || true
         systemctl restart "$unit" >/dev/null 2>&1 || true
       fi
     done
   elif [ "$INIT_SYS" = "openrc" ]; then
-    for svc in php-fpm83 php-fpm82 php-fpm84 php-fpm81 php-fpm; do
+    for svc in php-fpm85 php-fpm84 php-fpm83 php-fpm82 php-fpm81 php-fpm; do
       if [ -x "/etc/init.d/${svc}" ]; then
         rc-update add "$svc" default >/dev/null 2>&1 || true
         rc-service "$svc" restart >/dev/null 2>&1 || true
@@ -521,9 +649,8 @@ sleep 1
 
 # Detect web/php runtime user
 WEB_USER="www-data"
-for cand_u in www-data nginx http apache _www; do
+for cand_u in www-data nginx http apache wwwrun _www; do
   if id -u "$cand_u" >/dev/null 2>&1; then
-    # Prefer user mentioned in nginx.conf if found
     if [ -f /etc/nginx/nginx.conf ] && grep -Eq "^\s*user\s+${cand_u}\b" /etc/nginx/nginx.conf; then
       WEB_USER="$cand_u"
       break
@@ -531,7 +658,7 @@ for cand_u in www-data nginx http apache _www; do
   fi
 done
 if ! id -u "$WEB_USER" >/dev/null 2>&1; then
-  for cand_u in www-data nginx http apache nobody; do
+  for cand_u in www-data nginx http apache wwwrun nobody; do
     if id -u "$cand_u" >/dev/null 2>&1; then WEB_USER="$cand_u"; break; fi
   done
 fi
@@ -570,7 +697,14 @@ PY
 
 rm -f /etc/nginx/sites-enabled/default "${NGINX_CONF_DIR}/default.conf" 2>/dev/null || true
 
-# Self-heal SELinux & Firewall on RHEL/Rocky/Alma/Fedora
+# Self-heal Nginx config if an older distro lacks http_gzip_static_module
+if ! nginx -t >/dev/null 2>&1; then
+  warn "Nginx test failed — attempting automatic compatibility healing..."
+  sed -i '/gzip_static/d' "${NGINX_CONF_DIR}/vmail.conf" 2>/dev/null || true
+  nginx -t
+fi
+
+# Self-heal SELinux & Firewall on RHEL/Rocky/Alma/Fedora/openSUSE
 if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce 2>/dev/null || true)" = "Enforcing" ]; then
   log "Applying SELinux policies for Nginx & Webmail..."
   command -v setsebool >/dev/null 2>&1 && setsebool -P httpd_can_network_connect 1 >/dev/null 2>&1 || true
@@ -587,8 +721,6 @@ if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>
   done
   firewall-cmd --reload >/dev/null 2>&1 || true
 fi
-
-nginx -t
 
 # 6. Enable & Start All Services
 if [ "$INIT_SYS" = "systemd" ]; then
@@ -633,18 +765,18 @@ if [ -n "$TUNNEL_TOKEN" ] && ! command -v cloudflared >/dev/null 2>&1; then
     *) CF_ARCH="" ;;
   esac
   if [ -n "$CF_ARCH" ]; then
-    curl -fsSL --retry 3 "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" -o /usr/local/bin/cloudflared
+    fetch_with_retry "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" /usr/local/bin/cloudflared
     chmod 755 /usr/local/bin/cloudflared
     cloudflared service install "$TUNNEL_TOKEN" >/dev/null 2>&1 || true
   fi
 fi
 
-# 8. Built-in Post-Install Self-Verification
+# 8. Built-in Post-Install Self-Verification & Auto-Heal
 log "Verifying live service endpoints..."
 sleep 2
 VERIFY_OK="1"
 for url in "http://127.0.0.1:8096/vmail-api/v1/health" "http://127.0.0.1:${HTTP_PORT}/vmail-api/v1/health"; do
-  if curl -fsS --max-time 5 "$url" | grep -q '"ok": true'; then
+  if curl -fsS --max-time 5 -H "Host: ${MAIL_HOST}" "$url" | grep -q '"ok":true\|"ok": true'; then
     ok "Health OK -> $url"
   else
     warn "Check failed -> $url"
@@ -657,13 +789,24 @@ else
   warn "Webmail PHP check returned non-200 on http://127.0.0.1:${HTTP_PORT}/"
   VERIFY_OK="0"
 fi
+if [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Host: ${MAIL_HOST}" "http://127.0.0.1:${HTTP_PORT}/admin/" || echo 000)" = "200" ]; then
+  ok "Admin Console OK -> http://127.0.0.1:${HTTP_PORT}/admin/"
+else
+  warn "Admin Console check returned non-200"
+  VERIFY_OK="0"
+fi
+
+if [ "$VERIFY_OK" != "1" ]; then
+  warn "Running automatic self-healing via vmail doctor --fix..."
+  vmail doctor --fix || true
+fi
 
 echo
 echo "=================================================================="
 if [ "$VERIFY_OK" = "1" ]; then
-  echo "  Vmail Mail Server Installation Verified & Ready!"
+  echo "  Vmail Mail Server v1.2.0 Installation Verified & Ready!"
 else
-  echo "  Vmail Installed (check warnings above with: vmail status)"
+  echo "  Vmail Installed (check status with: vmail doctor)"
 fi
 echo "=================================================================="
 echo "  Webmail (Gmail UI):   https://${MAIL_HOST}/"
@@ -673,5 +816,5 @@ echo "  Admin Mailbox:        ${ADMIN_EMAIL}"
 if [ "$GEN_PASS_SHOWN" = "1" ]; then
   echo "  Admin Password:       ${ADMIN_PASS}   (Save this!)"
 fi
-echo "  CLI Management:       vmail status | domains | accounts | sync | test | doctor"
+echo "  CLI Management:       vmail status | doctor --fix | domains | accounts | sync | test"
 echo "=================================================================="

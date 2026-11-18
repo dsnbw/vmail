@@ -70,21 +70,49 @@
     $("modal-body").innerHTML = "";
   }
 
+  const _inflightGets = new Map();
+  const _getCache = new Map();
+  const _GET_TTL_MS = 4000;
+
   async function api(path, opts = {}) {
+    const method = String(opts.method || "GET").toUpperCase();
     const cleanPath = path.startsWith("/") ? "." + path : "./" + path;
-    const res = await fetch(cleanPath, {
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
-      ...opts,
-    });
-    const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
-    if (!res.ok || data.ok === false) {
-      if (res.status === 401 && path !== "/api/me" && path !== "/api/login") {
-        showLogin();
+    if (method !== "GET") {
+      _getCache.clear();
+    } else if (!opts.noCache) {
+      const hit = _getCache.get(cleanPath);
+      if (hit && hit.exp > Date.now()) {
+        return hit.data;
       }
-      throw new Error(data.error || `Lỗi HTTP ${res.status}`);
+      if (_inflightGets.has(cleanPath)) {
+        return _inflightGets.get(cleanPath);
+      }
     }
-    return data;
+
+    const run = (async () => {
+      const res = await fetch(cleanPath, {
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+        ...opts,
+      });
+      const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+      if (!res.ok || data.ok === false) {
+        if (res.status === 401 && path !== "/api/me" && path !== "/api/login") {
+          showLogin();
+        }
+        throw new Error(data.error || `Lỗi HTTP ${res.status}`);
+      }
+      if (method === "GET" && path !== "/api/me") {
+        _getCache.set(cleanPath, { exp: Date.now() + _GET_TTL_MS, data });
+      }
+      return data;
+    })();
+
+    if (method === "GET") {
+      _inflightGets.set(cleanPath, run);
+      run.finally(() => _inflightGets.delete(cleanPath));
+    }
+    return run;
   }
 
   function showLogin() {

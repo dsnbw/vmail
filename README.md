@@ -50,24 +50,35 @@ flowchart LR
 
 | Hệ điều hành | Phiên bản hỗ trợ | Gói & Init System | Cổng Web & DB |
 |---|---|---|---|
-| **Ubuntu / Debian** | Ubuntu 20.04–24.04+, Debian 11/12/13, Armbian | `apt`, `systemd` / PRoot | MariaDB hoặc SQLite |
-| **RHEL / Rocky / Alma / CentOS / Fedora / Amazon Linux** | EL8 / EL9 / Fedora / AL2023 | `dnf` / `yum`, `systemd`, auto SELinux + `firewalld` | MariaDB hoặc SQLite |
-| **Alpine Linux** | Alpine 3.18 – 3.21+ | `apk`, `musl` binary, `OpenRC` | MariaDB hoặc SQLite |
+| **Ubuntu / Debian** | Ubuntu 18.04–26.04+, Debian 10/11/12/13, Armbian | `apt`, `systemd` / PRoot | MariaDB hoặc SQLite |
+| **RHEL / Rocky / Alma / CentOS / Fedora / Amazon Linux** | EL8 / EL9 / EL10 / Fedora / AL2023 | `dnf` / `yum`, `systemd`, auto SELinux + `firewalld` | MariaDB hoặc SQLite |
+| **openSUSE / SLES** | Leap 15+ / Tumbleweed / SLES | `zypper`, `systemd` | MariaDB hoặc SQLite |
+| **Alpine Linux** | Alpine 3.17 – 3.22+ | `apk`, `musl` binary, `OpenRC` | MariaDB hoặc SQLite |
 | **Arch Linux / Manjaro** | Rolling | `pacman`, `systemd` | MariaDB hoặc SQLite |
 
 - **Kiến trúc CPU hỗ trợ:** `x86_64` (`amd64`), `aarch64` (`arm64`), `armv7l` (`armhf`) — cả bản `gnu` lẫn `musl`.
+- **Tối ưu tốc độ thế hệ mới (2026 Stack):**
+  - **Nginx HTTP/2 & HTTP/3 + `gzip_static` + `open_file_cache` + Upstream Keep-Alive Pool (`keepalive 32`)**: nén trước static assets, loại bỏ overhead `stat()` & handshake TCP nội bộ.
+  - **PHP 8.x OPcache + Tracing JIT (`opcache.jit=1255`) + `realpath_cache` + IMAP DB Cache (`CONDSTORE`/`QRESYNC`)**: tăng tốc PHP Webmail và triệt tiêu I/O ghi log thừa.
+  - **Backend Keep-Alive JMAP Batching + ThreadPoolExecutor + ETag/304/Gzip + SQLite WAL `mmap`**: gom 5 lệnh JMAP của Dashboard thành **1 round-trip duy nhất**, tải tĩnh từ RAM kèm nén Gzip.
+  - **Frontend Speculation Rules API + Early Hints (`Link: rel=preload`) + `content-visibility: auto` + Adaptive Visibility Polling**: giảm ~80% tải nền khi tab ẩn, chuyển tab Admin/Webmail tức thì.
 - **Tài nguyên tối thiểu:** 1 vCPU, 512 MB–1 GB RAM (~220–240 MB RAM toàn bộ stack).
 - **Cơ chế tự khắc phục (Self-Healing):**
-  - Tự hoàn tất Bootstrap Mode trên server trắng, cấp phát listener tách cổng (`8090` thay `8080`) để không đụng Nginx.
+  - Tự phục hồi khóa `apt`/`dpkg`, tự thử lại mạng kèm fallback IPv4, tự hoàn tất Bootstrap Mode trên server trắng & tách cổng (`8090` thay `8080`).
   - Tự động chuyển sang **SQLite** cho Webmail nếu VPS ít RAM/container không chạy được MariaDB.
-  - Tự phát hiện socket PHP-FPM (`unix:` hoặc `127.0.0.1:9000`), quyền user web (`www-data`/`nginx`/`apache`/`http`), SELinux boolean và firewalld.
-  - Tự kiểm tra sức khỏe toàn bộ endpoint & sinh xác minh ngay sau khi cài đặt (`vmail doctor`).
+  - Tự phát hiện phiên bản PHP (`php8.5`–`php8.0`), socket PHP-FPM, quyền user web, SELinux boolean, firewalld, tự kiểm tra & tự sửa (`vmail doctor --fix`).
 
 ---
 
-## 🚀 Cài đặt nhanh (1 Lệnh)
+## 🚀 Cài đặt nhanh (1 Lệnh — Chạy được ngay)
 
-### Cách 1: Cài đặt tương tác (Interactive)
+### Cách 1: 1 Lệnh trực tiếp từ GitHub (Không cần clone trước)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dsnbw/vmail/main/install.sh | sudo bash -s -- --domain example.com
+```
+
+### Cách 2: Clone kho mã nguồn & Cài tương tác (Interactive)
 
 ```bash
 git clone https://github.com/dsnbw/vmail.git
@@ -75,12 +86,10 @@ cd vmail
 sudo bash install.sh
 ```
 
-### Cách 2: Cài đặt tự động hoàn toàn qua tham số (Kèm Cloudflare & SMTP Relay)
+### Cách 3: Cài đặt tự động hoàn toàn qua tham số (Kèm Cloudflare & SMTP Relay)
 
 ```bash
-git clone https://github.com/dsnbw/vmail.git
-cd vmail
-sudo bash install.sh \
+curl -fsSL https://raw.githubusercontent.com/dsnbw/vmail/main/install.sh | sudo bash -s -- \
   --domain example.com \
   --admin-email admin@example.com \
   --admin-pass 'StrongPass@2026!' \
@@ -105,7 +114,7 @@ Sau khi cài đặt hoàn tất:
 
 ```bash
 vmail status                       # Kiểm tra RAM, Disk, tiến trình, cổng dịch vụ & thống kê
-vmail doctor                       # Tự chẩn đoán toàn bộ tiến trình, cổng & tệp cấu hình
+vmail doctor [--fix]               # Tự chẩn đoán & tự khắc phục dịch vụ/quyền cấu hình
 vmail start | stop | restart       # Điều khiển nhanh toàn bộ dịch vụ (systemd / OpenRC / standalone)
 vmail logs [-n 40]                 # Xem nhanh nhật ký gửi/nhận mail mới nhất
 vmail domains                      # Liệt kê danh sách tên miền & Catch-All
