@@ -59,7 +59,7 @@ flowchart LR
 - **Kiến trúc CPU hỗ trợ:** `x86_64` (`amd64`), `aarch64` (`arm64`), `armv7l` (`armhf`) — cả bản `gnu` lẫn `musl`.
 - **Tối ưu tốc độ thế hệ mới (2026 Stack):**
   - **Nginx HTTP/2 & HTTP/3 + `gzip_static` + `open_file_cache` + Upstream Keep-Alive Pool (`keepalive 32`)**: nén trước static assets, loại bỏ overhead `stat()` & handshake TCP nội bộ.
-  - **PHP 8.x OPcache + Tracing JIT (`opcache.jit=1255`) + `realpath_cache` + IMAP DB Cache (`CONDSTORE`/`QRESYNC`)**: tăng tốc PHP Webmail và triệt tiêu I/O ghi log thừa.
+  - **PHP 8.x OPcache Bytecode Cache (`opcache.jit=disable`) + `realpath_cache` + IMAP DB Cache (`CONDSTORE`/`QRESYNC`)**: tăng tốc PHP Webmail và tương thích an toàn tuyệt đối trên PRoot ARM64 / Docker / SELinux W^X.
   - **Backend Keep-Alive JMAP Batching + ThreadPoolExecutor + ETag/304/Gzip + SQLite WAL `mmap`**: gom 5 lệnh JMAP của Dashboard thành **1 round-trip duy nhất**, tải tĩnh từ RAM kèm nén Gzip.
   - **Frontend Speculation Rules API + Early Hints (`Link: rel=preload`) + `content-visibility: auto` + Adaptive Visibility Polling**: giảm ~80% tải nền khi tab ẩn, chuyển tab Admin/Webmail tức thì.
 - **Tài nguyên tối thiểu:** 1 vCPU, 512 MB–1 GB RAM (~220–240 MB RAM toàn bộ stack).

@@ -14,7 +14,7 @@ set -euo pipefail
 #   curl -fsSL https://raw.githubusercontent.com/dsnbw/vmail/main/install.sh | sudo bash -s -- --domain example.com
 # ==============================================================================
 
-VMAIL_VERSION="${VMAIL_VERSION:-v1.2.0}"
+VMAIL_VERSION="${VMAIL_VERSION:-v1.2.1}"
 VMAIL_REPO="${VMAIL_REPO:-dsnbw/vmail}"
 ROUNDCUBE_VERSION="${VMAIL_ROUNDCUBE_VERSION:-1.6.10}"
 WEBMAIL_ROOT="/var/www/vmail-webmail"
@@ -40,7 +40,7 @@ NON_INTERACTIVE="0"
 
 usage() {
   cat <<'EOF'
-Vmail Universal Self-Healing Installer (v1.2.0):
+Vmail Universal Self-Healing Installer (v1.2.1):
   --domain <domain>           Primary domain (e.g. example.com)
   --mail-host <hostname>      Webmail/MX hostname (default: mail.<domain>)
   --admin-email <email>       Admin mailbox (default: admin@<domain>)
@@ -595,10 +595,10 @@ out = tpl.replace("{{DB_DSN}}", "${DB_DSN}").replace("{{DES_KEY}}", "${DES_KEY}"
 open("${WEBMAIL_ROOT}/config/config.inc.php", "w", encoding="utf-8").write(out)
 PY
 
-# 5. Tune PHP 8.x OPcache + Tracing JIT + Suppress Deprecation I/O Spam
+# 5. Tune PHP 8.x OPcache (keep JIT disabled for full PRoot/container/SELinux W^X stability)
 tune_php_perf() {
   local ini_content
-  ini_content="; Vmail 2026 High-Performance PHP Tuning
+  ini_content="; Vmail High-Performance PHP Tuning
 opcache.enable=1
 opcache.memory_consumption=128
 opcache.interned_strings_buffer=16
@@ -606,8 +606,8 @@ opcache.max_accelerated_files=10000
 opcache.revalidate_freq=60
 opcache.validate_timestamps=1
 opcache.enable_file_override=1
-opcache.jit=1255
-opcache.jit_buffer_size=64M
+opcache.jit=disable
+opcache.jit_buffer_size=0
 realpath_cache_size=4096K
 realpath_cache_ttl=600
 error_reporting=E_ALL & ~E_DEPRECATED & ~E_NOTICE
@@ -620,7 +620,7 @@ display_errors=Off
   done
 }
 
-log "Tuning PHP OPcache & Tracing JIT..."
+log "Tuning PHP OPcache (safe mode without W^X JIT)..."
 tune_php_perf
 
 # Start PHP-FPM & Auto-Detect Socket + Web User across all distros
@@ -804,7 +804,7 @@ fi
 echo
 echo "=================================================================="
 if [ "$VERIFY_OK" = "1" ]; then
-  echo "  Vmail Mail Server v1.2.0 Installation Verified & Ready!"
+  echo "  Vmail Mail Server v1.2.1 Installation Verified & Ready!"
 else
   echo "  Vmail Installed (check status with: vmail doctor)"
 fi

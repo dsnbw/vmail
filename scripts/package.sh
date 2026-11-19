@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Build clean portable Vmail release tarball + SHA256SUMS.txt
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:-v1.2.0}"
+VERSION="${1:-v1.2.1}"
 DIST_DIR="${REPO_DIR}/dist"
 STAGE_DIR="$(mktemp -d)"
 trap 'rm -rf "$STAGE_DIR"' EXIT
